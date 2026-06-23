@@ -1,0 +1,6 @@
+{
+  "name": "PosterAI",
+  "description": "Create Professional AI Images in Seconds with a Text Behind Subject Editor and AI Photo Generator",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
