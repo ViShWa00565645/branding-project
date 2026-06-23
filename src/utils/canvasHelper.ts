@@ -63,13 +63,13 @@ export async function generateCutout(
     URL.revokeObjectURL(blobUrl);
 
     // 3. BMW SOLID MASK FIX:
-    // For any pixel with alpha > 15, force it to 255.
+    // For any pixel with alpha > 20, force it to 255.
     // This makes car windows, hair strands, and semi-transparent edges 100% solid.
     const imgData = ctx.getImageData(0, 0, w, h);
     const data = imgData.data;
     for (let i = 0; i < data.length; i += 4) {
       const a = data[i + 3];
-      if (a > 15) {
+      if (a > 20) {
         data[i + 3] = 255;
       }
     }
@@ -110,11 +110,11 @@ export async function generateCutout(
           ctx.clip();
           ctx.drawImage(originalImg, 0, 0, w, h);
 
-          // Re-solidify newly restored pixels with BMW fix (alpha > 15)
+          // Re-solidify newly restored pixels with BMW fix (alpha > 20)
           const areaData = ctx.getImageData(0, 0, w, h);
           const aData = areaData.data;
           for (let k = 0; k < aData.length; k += 4) {
-            if (aData[k + 3] > 15) {
+            if (aData[k + 3] > 20) {
               aData[k + 3] = 255;
             }
           }
