@@ -888,7 +888,7 @@ export default function Gallery() {
                 className="text-sm font-black text-gray-800 tracking-tight"
                 style={{ letterSpacing: "-0.02em" }}
               >
-                Curated by{" "}
+                Created by{" "}
                 <span
                   className="bg-clip-text text-transparent"
                   style={{ backgroundImage: "linear-gradient(135deg, #1a1a1a 20%, #666 80%)" }}

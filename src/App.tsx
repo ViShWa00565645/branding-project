@@ -121,8 +121,11 @@ export default function App() {
             <span className="text-xs font-extrabold text-black tracking-widest uppercase">
               BehindLens AI Professional Creative Suite
             </span>
-            <p className="text-[10px] text-gray-400 mt-1 font-semibold leading-relaxed max-w-sm">
-              An advanced high-fidelity client-side design engine. Your custom uploaded photos stay inside WebAssembly hardware structures and are securely processed in your local browser sandbox.
+            <p className="text-[10px] text-gray-500 mt-1 font-semibold leading-relaxed">
+              Created by{" "}
+              <strong className="text-black">Vishwa Rajasekar</strong>
+              {" · "}
+              High-fidelity client-side 4K design engine. Your photos are processed securely in your local browser.
             </p>
           </div>
 

@@ -14,7 +14,7 @@ import { getDeviceId } from "../utils/auth";
 import {
   Type, CaseUpper, Paintbrush, Sliders, Move, RefreshCw,
   Download, AlertCircle, Trash2, Eye, EyeOff, Upload,
-  ChevronDown, Search, Camera, Linkedin, Instagram, Check, Share2
+  ChevronDown, Search, Camera, Linkedin, Instagram, Check
 } from "lucide-react";
 import logo from "../assets/logo.png";
 
@@ -150,9 +150,8 @@ export default function TextBehindSubject({
 
   // Export configuration
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
-  const [isPostingToGallery, setIsPostingToGallery] = useState<boolean>(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("png");
-  const [exportResolution, setExportResolution] = useState<ExportResolution>("original");
+  const [exportResolution, setExportResolution] = useState<ExportResolution>("4k");
   const [previewWidth, setPreviewWidth] = useState<number>(500);
 
   // Community gallery upload status (Button B only)
@@ -487,7 +486,7 @@ export default function TextBehindSubject({
       textLayers,
       ratio,
       activeRatio.ratio,
-      "original",
+      "4k",
       exportFormat,
       livePreviewWidth,
       bgBlur,
@@ -506,36 +505,21 @@ export default function TextBehindSubject({
     URL.revokeObjectURL(url);
   };
 
-  // Button A — private 4K download only (no cloud)
-  const handlePrivateDownload = async () => {
-    if (!selectedImage || isDownloading || isPostingToGallery) return;
+  /** Download pipeline: 4K export → local save → Supabase upload → history record */
+  const handleDownload = async () => {
+    if (!selectedImage || isDownloading) return;
 
     setIsDownloading(true);
-    try {
-      const blob = await renderExportBlob();
-      triggerBrowserDownload(blob, buildExportFileName());
-    } catch (err) {
-      console.error(err);
-      alert("Failed to export. Please check the files and try again.");
-    } finally {
-      setIsDownloading(false);
-    }
-  };
-
-  // Button B — optional community gallery share (with confirmation)
-  const handlePostToGallery = async () => {
-    if (!selectedImage || isDownloading || isPostingToGallery) return;
-
-    const confirmed = window.confirm("Do you want to share this masterpiece with the world?");
-    if (!confirmed) return;
-
-    setIsPostingToGallery(true);
     setGalleryStatus("uploading");
-    setGalleryMessage("Uploading to community gallery...");
+    setGalleryMessage("Rendering 4K masterpiece...");
 
     try {
       const blob = await renderExportBlob();
       const fileName = buildExportFileName();
+
+      triggerBrowserDownload(blob, fileName);
+
+      setGalleryMessage("Uploading to your private cloud gallery...");
       const storagePath = `exports/${fileName}`;
 
       const { error: uploadError } = await supabase.storage
@@ -567,18 +551,19 @@ export default function TextBehindSubject({
       }
 
       setGalleryStatus("success");
-      setGalleryMessage("Posted to community gallery ✓");
+      setGalleryMessage("4K downloaded & saved to your private gallery ✓");
     } catch (err: unknown) {
-      console.warn("Gallery post failed:", err);
+      console.error(err);
       setGalleryStatus("error");
       const msg = err instanceof Error ? err.message : "Unknown error";
-      setGalleryMessage(`Gallery upload failed: ${msg}`);
+      setGalleryMessage(`Export failed: ${msg}`);
+      alert("Failed to export. Please check the files and try again.");
     } finally {
-      setIsPostingToGallery(false);
+      setIsDownloading(false);
     }
   };
 
-  const isExportBusy = isDownloading || isPostingToGallery;
+  const isExportBusy = isDownloading;
 
   return (
     <div id="text-behind-subject-editor" className="flex flex-col lg:grid lg:grid-cols-12 gap-6 w-full max-w-7xl mx-auto">
@@ -1569,41 +1554,26 @@ export default function TextBehindSubject({
 
             <button
               type="button"
-              onClick={handlePrivateDownload}
+              onClick={handleDownload}
               disabled={isExportBusy || !selectedImage}
               className="w-full py-4 px-5 rounded-xl text-sm font-bold text-white bg-black hover:bg-black/90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
               {isDownloading ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Rendering 4K export...</span>
+                  <span>Rendering 4K masterpiece...</span>
                 </>
               ) : (
                 <>
                   <Download className="w-4 h-4" />
-                  <span>Download High-Res (Private)</span>
+                  <span>Download 4K Masterpiece</span>
                 </>
               )}
             </button>
 
-            <button
-              type="button"
-              onClick={handlePostToGallery}
-              disabled={isExportBusy || !selectedImage}
-              className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold text-gray-700 bg-white border border-gray-300 hover:border-black hover:text-black active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isPostingToGallery ? (
-                <>
-                  <div className="w-3.5 h-3.5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
-                  <span>Posting to gallery...</span>
-                </>
-              ) : (
-                <>
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Post to Community Gallery</span>
-                </>
-              )}
-            </button>
+            <p className="text-[10px] text-gray-400 text-center font-medium">
+              Saves locally, uploads to your private cloud gallery, and syncs to the Gallery tab.
+            </p>
 
             {galleryMessage && (
               <div className={`text-xs font-medium flex items-center gap-1.5 p-2 rounded-lg border ${

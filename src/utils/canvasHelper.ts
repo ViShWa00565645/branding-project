@@ -19,8 +19,12 @@ export interface ImageFilters {
 export type ExportResolution = "original" | "hd" | "4k";
 export type ExportFormat = "png" | "jpeg";
 
+const PRO_MASK_ALPHA_THRESHOLD = 20;
+const ISNET_MODEL = "isnet" as const;
+
 /**
- * Zero-fail async loader — resolves only after decode() and valid natural dimensions.
+ * Async robust image loader — resolves only after decode() and valid natural dimensions.
+ * Prevents the white-background export bug caused by drawing before pixels are ready.
  */
 export function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -64,32 +68,20 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-/** BMW Solid Mask — alpha > 15 becomes fully opaque; halos below threshold are cleared. */
-function applyBmwSolidMask(imageData: ImageData): void {
+/**
+ * Pro Masking pixel loop — alpha > 20 → 255, alpha <= 20 → 0.
+ * Preserves inter-subject gaps and car-window transparency.
+ */
+function applyProMask(imageData: ImageData): void {
   const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const a = data[i + 3];
-    if (a <= 0 || a >= 255) continue;
-
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const isLightGrey =
-      r > 180 &&
-      g > 180 &&
-      b > 180 &&
-      Math.abs(r - g) < 25 &&
-      Math.abs(g - b) < 25 &&
-      Math.abs(r - b) < 25;
-
-    if (isLightGrey && a < 180) {
-      data[i + 3] = Math.max(0, Math.round(a * 0.1));
-    } else if (a > 15) {
-      data[i + 3] = 255;
-    } else {
-      data[i + 3] = 0;
-    }
+  for (let i = 3; i < data.length; i += 4) {
+    data[i] = data[i] > PRO_MASK_ALPHA_THRESHOLD ? 255 : 0;
   }
+}
+
+function configureHighQualityContext(ctx: CanvasRenderingContext2D): void {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 }
 
 function buildBackgroundFilter(filters?: ImageFilters, blurPx?: number): string {
@@ -140,36 +132,33 @@ function computeCropRect(
   return { x: 0, y: (naturalH - h) / 2, w: naturalW, h };
 }
 
-function resolveExportDimensions(
-  naturalWidth: number,
-  naturalHeight: number,
+/**
+ * 4K Clarity Lock — canvas matches background native pixel grid at 1:1 source resolution.
+ * HD mode downscales longest edge to 1920px; original/4k stay at full native clarity.
+ */
+function resolveCanvasDimensions(
   crop: { w: number; h: number },
   resolution: ExportResolution
-): { canvasW: number; canvasH: number; outputScale: number } {
-  const baseW = Math.round(crop.w);
-  const baseH = Math.round(crop.h);
+): { canvasW: number; canvasH: number } {
+  let canvasW = Math.round(crop.w);
+  let canvasH = Math.round(crop.h);
 
-  if (resolution === "original" || resolution === "4k") {
-    return { canvasW: baseW, canvasH: baseH, outputScale: 1 };
+  if (resolution === "hd") {
+    const maxDim = 1920;
+    const longest = Math.max(canvasW, canvasH);
+    if (longest > maxDim) {
+      const scale = maxDim / longest;
+      canvasW = Math.round(canvasW * scale);
+      canvasH = Math.round(canvasH * scale);
+    }
   }
 
-  const maxDim = 1920;
-  const longest = Math.max(baseW, baseH);
-  if (longest <= maxDim) {
-    return { canvasW: baseW, canvasH: baseH, outputScale: 1 };
-  }
-
-  const scale = maxDim / longest;
-  return {
-    canvasW: Math.round(baseW * scale),
-    canvasH: Math.round(baseH * scale),
-    outputScale: scale,
-  };
+  return { canvasW, canvasH };
 }
 
 /**
- * Triple-pass text: pass 1 shadow/glow, passes 2–3 solid fill for gap-free glyphs.
- * Mustang Stretch: ctx.scale(1, heightScale) applied before drawing.
+ * Triple-Pass Typography + Mustang Stretch (ctx.scale(1, heightScale)).
+ * scaleFactor = canvas.width / previewWidth drives all typography sizing.
  */
 function drawTextLayer(
   ctx: CanvasRenderingContext2D,
@@ -186,6 +175,7 @@ function drawTextLayer(
   const heightScale = t.heightScale || 1;
 
   ctx.save();
+  configureHighQualityContext(ctx);
   ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
 
   const letterSpacingCtx = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
@@ -195,17 +185,8 @@ function drawTextLayer(
 
   const textMetrics = ctx.measureText(t.text);
   const textWidth = textMetrics.width;
-  const halfW = textWidth / 2;
-  const halfH = (finalFontSize * heightScale) / 2;
 
-  let adjustedTx = tx;
-  let adjustedTy = ty;
-  if (adjustedTx - halfW < 0) adjustedTx = halfW;
-  else if (adjustedTx + halfW > canvasW) adjustedTx = canvasW - halfW;
-  if (adjustedTy - halfH < 0) adjustedTy = halfH;
-  else if (adjustedTy + halfH > canvasH) adjustedTy = canvasH - halfH;
-
-  ctx.translate(adjustedTx, adjustedTy);
+  ctx.translate(tx, ty);
   ctx.rotate((t.rotation * Math.PI) / 180);
   ctx.scale(1, heightScale);
 
@@ -214,55 +195,55 @@ function drawTextLayer(
   ctx.globalAlpha = t.opacity;
   ctx.fillStyle = t.color;
 
-  for (let pass = 0; pass < 3; pass++) {
+  const hasDropShadow =
+    !t.glowEnabled &&
+    (t.shadowBlur > 0 || t.shadowOffsetX !== 0 || t.shadowOffsetY !== 0);
+
+  if (t.glowEnabled) {
     ctx.save();
-
-    if (pass === 0) {
-      if (t.glowEnabled) {
-        ctx.shadowColor = t.glowColor;
-        ctx.shadowBlur = t.glowBlur * scaleFactor;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-      } else if (t.shadowBlur > 0 || t.shadowOffsetX !== 0 || t.shadowOffsetY !== 0) {
-        ctx.shadowColor = t.shadowColor;
-        ctx.shadowBlur = t.shadowBlur * scaleFactor;
-        ctx.shadowOffsetX = t.shadowOffsetX * scaleFactor;
-        ctx.shadowOffsetY = t.shadowOffsetY * scaleFactor;
-      }
-    } else {
-      ctx.shadowColor = "transparent";
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 0;
-      ctx.globalAlpha = t.opacity;
-      ctx.fillStyle = t.color;
-    }
-
+    ctx.shadowColor = t.glowColor;
+    ctx.shadowBlur = t.glowBlur * scaleFactor;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
     ctx.fillText(t.text, 0, 0);
-
-    if (pass === 0 && t.isBold) {
-      ctx.shadowColor = "transparent";
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = t.color;
-      ctx.lineWidth = Math.max(1, 2 * scaleFactor);
-      ctx.lineJoin = "round";
-      ctx.strokeText(t.text, 0, 0);
-    }
-
-    if (pass === 0 && t.isUnderline) {
-      ctx.shadowColor = "transparent";
-      ctx.shadowBlur = 0;
-      const underlineY = finalFontSize / 1.7;
-      ctx.beginPath();
-      ctx.moveTo(-textWidth / 2, underlineY);
-      ctx.lineTo(textWidth / 2, underlineY);
-      ctx.strokeStyle = t.color;
-      ctx.lineWidth = Math.max(2, finalFontSize / 15);
-      ctx.lineCap = "round";
-      ctx.stroke();
-    }
-
     ctx.restore();
+  } else if (hasDropShadow) {
+    ctx.save();
+    ctx.shadowColor = t.shadowColor;
+    ctx.shadowBlur = t.shadowBlur * scaleFactor;
+    ctx.shadowOffsetX = t.shadowOffsetX * scaleFactor;
+    ctx.shadowOffsetY = t.shadowOffsetY * scaleFactor;
+    ctx.fillText(t.text, 0, 0);
+    ctx.restore();
+  }
+
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.globalAlpha = t.opacity;
+  ctx.fillStyle = t.color;
+
+  for (let pass = 0; pass < 3; pass++) {
+    ctx.fillText(t.text, 0, 0);
+  }
+
+  if (t.isBold) {
+    ctx.strokeStyle = t.color;
+    ctx.lineWidth = Math.max(1, 2 * scaleFactor);
+    ctx.lineJoin = "round";
+    ctx.strokeText(t.text, 0, 0);
+  }
+
+  if (t.isUnderline) {
+    const underlineY = finalFontSize / 1.7;
+    ctx.beginPath();
+    ctx.moveTo(-textWidth / 2, underlineY);
+    ctx.lineTo(textWidth / 2, underlineY);
+    ctx.strokeStyle = t.color;
+    ctx.lineWidth = Math.max(2, finalFontSize / 15);
+    ctx.lineCap = "round";
+    ctx.stroke();
   }
 
   ctx.restore();
@@ -277,12 +258,12 @@ export async function generateCutout(
   onProgress?: (step: string, percent: number) => void
 ): Promise<string> {
   const cutoutBlob = await removeBackground(imageSrc, {
-    model: "isnet",
+    model: ISNET_MODEL,
     progress: (key: string, current: number, total: number) => {
       if (!onProgress) return;
       const percent = total > 0 ? Math.round((current / total) * 100) : 0;
       let stage = "Analyzing image...";
-      if (key.includes("fetch")) stage = "Downloading AI Model (isnet)...";
+      if (key.includes("fetch")) stage = "Downloading AI Model (isnet FP32)...";
       if (key.includes("compute")) stage = "Processing subject mask...";
       onProgress(stage, percent);
     },
@@ -307,12 +288,21 @@ export async function generateCutout(
       throw new Error("Failed to create canvas context");
     }
 
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(cutoutImg, 0, 0, w, h);
+    configureHighQualityContext(ctx);
+    ctx.drawImage(
+      cutoutImg,
+      0,
+      0,
+      cutoutImg.naturalWidth,
+      cutoutImg.naturalHeight,
+      0,
+      0,
+      w,
+      h
+    );
 
     const imgData = ctx.getImageData(0, 0, w, h);
-    applyBmwSolidMask(imgData);
+    applyProMask(imgData);
     ctx.putImageData(imgData, 0, 0);
 
     if (strokes.length > 0) {
@@ -337,7 +327,7 @@ export async function generateCutout(
           ctx.drawImage(originalImg, 0, 0, w, h);
 
           const areaData = ctx.getImageData(0, 0, w, h);
-          applyBmwSolidMask(areaData);
+          applyProMask(areaData);
           ctx.putImageData(areaData, 0, 0);
           ctx.restore();
         }
@@ -354,24 +344,30 @@ export async function generateCutout(
   }
 }
 
-/**
- * Zero-fail export engine — native-resolution composite with Auto-Enhance on background.
- * Returns raw Blob for private download or cloud upload pipelines.
- */
-export async function exportCompositeBlob(
-  backgroundSrc: string,
-  cutoutSrc: string | null,
-  textConfig: TextConfig | TextConfig[],
-  _aspectRatioLabel: string,
-  targetRatio: number | null,
-  resolution: ExportResolution,
-  format: ExportFormat,
-  previewWidth: number = 500,
-  backgroundBlur: number = 0,
-  filters?: ImageFilters
-): Promise<Blob> {
-  const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
-  const safePreviewWidth = Math.max(1, previewWidth);
+interface CompositeRenderInput {
+  backgroundSrc: string;
+  cutoutSrc: string | null;
+  textConfigs: TextConfig[];
+  targetRatio: number | null;
+  resolution: ExportResolution;
+  format: ExportFormat;
+  previewWidth: number;
+  backgroundBlur: number;
+  filters?: ImageFilters;
+}
+
+async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLCanvasElement> {
+  const {
+    backgroundSrc,
+    cutoutSrc,
+    textConfigs,
+    targetRatio,
+    resolution,
+    format,
+    previewWidth,
+    backgroundBlur,
+    filters,
+  } = input;
 
   const [bgImg, cutoutImg] = await Promise.all([
     loadImage(backgroundSrc),
@@ -383,14 +379,9 @@ export async function exportCompositeBlob(
   const naturalWidth = bgImg.naturalWidth;
   const naturalHeight = bgImg.naturalHeight;
   const crop = computeCropRect(naturalWidth, naturalHeight, targetRatio);
-  const { canvasW, canvasH, outputScale } = resolveExportDimensions(
-    naturalWidth,
-    naturalHeight,
-    crop,
-    resolution
-  );
+  const { canvasW, canvasH } = resolveCanvasDimensions(crop, resolution);
 
-  const scaleFactor = (naturalWidth / safePreviewWidth) * outputScale;
+  const scaleFactor = canvasW / Math.max(1, previewWidth);
 
   const canvas = document.createElement("canvas");
   canvas.width = canvasW;
@@ -400,8 +391,7 @@ export async function exportCompositeBlob(
     throw new Error("Could not create high resolution rendering canvas context");
   }
 
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  configureHighQualityContext(ctx);
 
   if (format === "jpeg") {
     ctx.fillStyle = "#ffffff";
@@ -446,21 +436,17 @@ export async function exportCompositeBlob(
   textConfigs.forEach((t) => drawTextLayer(ctx, t, canvasW, canvasH, scaleFactor));
 
   if (cutoutImg) {
-    const cutoutCrop = computeCropRect(
-      cutoutImg.naturalWidth,
-      cutoutImg.naturalHeight,
-      targetRatio
-    );
-
     ctx.save();
+    configureHighQualityContext(ctx);
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
+    ctx.filter = "none";
     ctx.drawImage(
       cutoutImg,
-      cutoutCrop.x,
-      cutoutCrop.y,
-      cutoutCrop.w,
-      cutoutCrop.h,
+      crop.x,
+      crop.y,
+      crop.w,
+      crop.h,
       0,
       0,
       canvasW,
@@ -468,6 +454,38 @@ export async function exportCompositeBlob(
     );
     ctx.restore();
   }
+
+  return canvas;
+}
+
+/**
+ * Pro-Studio export — native 4K composite with filter-baked background and triple-pass type.
+ */
+export async function exportCompositeBlob(
+  backgroundSrc: string,
+  cutoutSrc: string | null,
+  textConfig: TextConfig | TextConfig[],
+  _aspectRatioLabel: string,
+  targetRatio: number | null,
+  resolution: ExportResolution,
+  format: ExportFormat,
+  previewWidth: number = 500,
+  backgroundBlur: number = 0,
+  filters?: ImageFilters
+): Promise<Blob> {
+  const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
+
+  const canvas = await renderCompositeCanvas({
+    backgroundSrc,
+    cutoutSrc,
+    textConfigs,
+    targetRatio,
+    resolution,
+    format,
+    previewWidth,
+    backgroundBlur,
+    filters,
+  });
 
   const mime = format === "jpeg" ? "image/jpeg" : "image/png";
   const quality = format === "jpeg" ? 0.98 : undefined;
@@ -500,6 +518,14 @@ export async function exportComposite(
   backgroundBlur: number = 0,
   filters?: ImageFilters
 ): Promise<string> {
+  const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
+
+  await Promise.all([
+    loadImage(backgroundSrc),
+    cutoutSrc ? loadImage(cutoutSrc) : Promise.resolve(null),
+    ensureTextFontsLoaded(textConfigs),
+  ]);
+
   const blob = await exportCompositeBlob(
     backgroundSrc,
     cutoutSrc,
