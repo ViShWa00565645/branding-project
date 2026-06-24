@@ -10,8 +10,8 @@ export interface BrushStroke {
 
 /**
  * Creates high performance transparent cutout from a source image
- * using @imgly/background-removal with isnet_fp16 model and the
- * advanced "BMW Solid Mask" algorithm (alpha > 15 → 255).
+ * using @imgly/background-removal with isnet model and the
+ * advanced "BMW Solid Mask" algorithm (alpha > 20 → 255).
  */
 export async function generateCutout(
   imageSrc: string,
@@ -22,14 +22,14 @@ export async function generateCutout(
   onProgress?: (step: string, percent: number) => void
 ): Promise<string> {
   try {
-    // 1. Run @imgly/background-removal with isnet_fp16 model for professional-grade masking
+    // 1. Run @imgly/background-removal with isnet model (high-quality) for professional-grade masking
     const cutoutBlob = await removeBackground(imageSrc, {
-      model: "isnet_fp16",
+      model: "isnet",
       progress: (key: string, current: number, total: number) => {
         if (onProgress) {
           const percent = total > 0 ? Math.round((current / total) * 100) : 0;
           let stage = "Analyzing image...";
-          if (key.includes("fetch")) stage = "Downloading AI Model (isnet_fp16)...";
+          if (key.includes("fetch")) stage = "Downloading AI Model (isnet)...";
           if (key.includes("compute")) stage = "Processing subject mask...";
           onProgress(stage, percent);
         }
@@ -37,7 +37,7 @@ export async function generateCutout(
     } as any);
     const blobUrl = URL.createObjectURL(cutoutBlob);
 
-    // 2. Load blob as Image so we can postprocess with Canvas & BMW Solid Mask
+    // 2. Load blob as Image so we can postprocess with Canvas & Soft-Glow outline removal
     const imgObj = await new Promise<HTMLImageElement>((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
@@ -62,15 +62,27 @@ export async function generateCutout(
     ctx.drawImage(imgObj, 0, 0, w, h);
     URL.revokeObjectURL(blobUrl);
 
-    // 3. BMW SOLID MASK FIX:
-    // For any pixel with alpha > 15, force it to 255.
-    // This makes car windows, hair strands, and semi-transparent edges 100% solid.
+    // 3. BMW SOLID MASK & SOFT-GLOW REMOVAL:
+    // For semi-transparent edge outline pixels, we clean up gray/white halos.
+    // Otherwise, we solidify alpha > 20 to 255 to hide text behind subject perfectly.
     const imgData = ctx.getImageData(0, 0, w, h);
     const data = imgData.data;
     for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
       const a = data[i + 3];
-      if (a > 15) {
-        data[i + 3] = 255;
+
+      if (a > 0 && a < 255) {
+        // Soft-Glow Removal: clean up white/grey outlines/halos around hair and shoulders
+        const isLightGrey = r > 180 && g > 180 && b > 180 && Math.abs(r - g) < 25 && Math.abs(g - b) < 25 && Math.abs(r - b) < 25;
+        if (isLightGrey && a < 180) {
+          data[i + 3] = Math.max(0, Math.round(a * 0.1)); // Soften / fade out outline halos
+        } else if (a > 20) {
+          data[i + 3] = 255;
+        } else {
+          data[i + 3] = 0;
+        }
       }
     }
     ctx.putImageData(imgData, 0, 0);
@@ -110,12 +122,25 @@ export async function generateCutout(
           ctx.clip();
           ctx.drawImage(originalImg, 0, 0, w, h);
 
-          // Re-solidify newly restored pixels with BMW fix (alpha > 15)
+          // Re-solidify and clean outline halos
           const areaData = ctx.getImageData(0, 0, w, h);
           const aData = areaData.data;
           for (let k = 0; k < aData.length; k += 4) {
-            if (aData[k + 3] > 15) {
-              aData[k + 3] = 255;
+            const ar = aData[k];
+            const ag = aData[k + 1];
+            const ab = aData[k + 2];
+            const aa = aData[k + 3];
+
+            if (aa > 0 && aa < 255) {
+              // Soft-Glow Removal: clean up white/grey outlines/halos around hair and shoulders
+              const isLightGrey = ar > 180 && ag > 180 && ab > 180 && Math.abs(ar - ag) < 25 && Math.abs(ag - ab) < 25 && Math.abs(ar - ab) < 25;
+              if (isLightGrey && aa < 180) {
+                aData[k + 3] = Math.max(0, Math.round(aa * 0.1));
+              } else if (aa > 20) {
+                aData[k + 3] = 255;
+              } else {
+                aData[k + 3] = 0;
+              }
             }
           }
           ctx.putImageData(areaData, 0, 0);
@@ -153,7 +178,13 @@ export async function exportComposite(
   resolution: "original" | "hd" | "4k",
   format: "png" | "jpeg",
   displayWidthRef: number = 500,
-  backgroundBlur: number = 0
+  backgroundBlur: number = 0,
+  filters?: {
+    brightness: number;
+    contrast: number;
+    saturation: number;
+    sharpen: number;
+  }
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const bgImg = new Image();
@@ -223,14 +254,22 @@ export async function exportComposite(
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
 
-        // ─── 3. Layer 1 — Background (with optional DSLR blur) ───
+        // ─── 3. Layer 1 — Background (with optional DSLR blur & adjustments) ───
         const scaleFactor = canvasW / displayWidthRef;
+
+        // Build combined filter string
+        let filterString = "";
+        if (filters) {
+          filterString += `brightness(${filters.brightness}) contrast(${filters.contrast}) saturate(${filters.saturation}) `;
+          if (filters.sharpen > 0) {
+            filterString += `url(#sharpen-effect) `;
+          }
+        }
 
         if (backgroundBlur && backgroundBlur > 0) {
           const scaledBlur = backgroundBlur * scaleFactor;
           ctx.save();
-          ctx.drawImage(bgImg, sourceX, sourceY, sourceW, sourceH, 0, 0, canvasW, canvasH);
-          ctx.filter = `blur(${scaledBlur}px)`;
+          ctx.filter = `${filterString}blur(${scaledBlur}px)`.trim();
           const offset = scaledBlur * 2;
           ctx.drawImage(
             bgImg,
@@ -241,13 +280,17 @@ export async function exportComposite(
           );
           ctx.restore();
         } else {
+          ctx.save();
+          if (filterString) {
+            ctx.filter = filterString.trim();
+          }
           ctx.drawImage(bgImg, sourceX, sourceY, sourceW, sourceH, 0, 0, canvasW, canvasH);
+          ctx.restore();
         }
 
         ctx.filter = "none";
 
         // ─── 4. Layer 2 — TRIPLE-PASS Text Rendering ───
-        // Draw text 3 times for maximum solidity and sharpness in high-res exports
         const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
 
         textConfigs.forEach((t) => {
@@ -279,7 +322,7 @@ export async function exportComposite(
             ctx.textAlign = "center";
             ctx.globalAlpha = t.opacity;
 
-            // Shadow / Glow — only on first pass to prevent cumulative shadow buildup
+            // Shadow / Glow
             if (pass === 0) {
               if (t.glowEnabled) {
                 ctx.shadowColor = t.glowColor;
@@ -338,6 +381,10 @@ export async function exportComposite(
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = "high";
           ctx.globalAlpha = 1.0;
+
+          if (filterString) {
+            ctx.filter = filterString.trim();
+          }
 
           let cutoutSourceX = 0;
           let cutoutSourceY = 0;

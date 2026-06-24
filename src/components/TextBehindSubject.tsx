@@ -125,8 +125,17 @@ export default function TextBehindSubject({
     };
   }, []);
 
-  // Current open tab — 3 tabs: Text, Style, Position
-  const [activeTab, setActiveTab] = useState<"text" | "style" | "position">("text");
+  // Current open tab — 3 tabs: Text, Image, Settings
+  const [activeTab, setActiveTab] = useState<"text" | "image" | "settings">("text");
+
+  // Image Processing State Variables
+  const [brightness, setBrightness] = useState<number>(1.0);
+  const [contrast, setContrast] = useState<number>(1.0);
+  const [saturation, setSaturation] = useState<number>(1.0);
+  const [sharpen, setSharpen] = useState<number>(0.0);
+
+  // Dynamic sharpen kernel matrix calculation: 0 -sharpen 0 -sharpen (1 + 4*sharpen) -sharpen 0 -sharpen 0
+  const sharpenKernel = `0 ${-sharpen} 0 ${-sharpen} ${1 + 4 * sharpen} ${-sharpen} 0 ${-sharpen} 0`;
 
   // Font family select dropdown states
   const [fontDropdownOpen, setFontDropdownOpen] = useState<boolean>(false);
@@ -440,7 +449,13 @@ export default function TextBehindSubject({
         exportResolution,
         exportFormat,
         containerWidth,
-        bgBlur
+        bgBlur,
+        {
+          brightness,
+          contrast,
+          saturation,
+          sharpen,
+        }
       );
 
       // 2. Download it to the user's PC
@@ -618,7 +633,7 @@ export default function TextBehindSubject({
                   <p className="text-[10px] text-gray-400 font-mono text-center max-w-[285px] leading-relaxed">
                     {maskProgress?.step.includes("Model")
                       ? "Neural weights downloading on first setup (subsequent loads are immediate from cache!)"
-                      : "Delineating subject boundaries using isnet_fp16 engine"}
+                      : "Delineating subject boundaries using isnet engine"}
                   </p>
                 </div>
               )}
@@ -630,7 +645,7 @@ export default function TextBehindSubject({
                 onMouseDown={handleCanvasContainerClickAndDraw}
                 onTouchStart={handleCanvasContainerTouchAndDraw}
                 style={{ maxHeight: "75vh" }}
-                className={`relative max-w-full overflow-hidden shadow-xl border border-gray-100 transition-all ${ASPECT_RATIO_PRESETS[ratio].aspect}`}
+                className={`relative max-w-full overflow-hidden shadow-xl border border-gray-150 transition-all ${ASPECT_RATIO_PRESETS[ratio].aspect}`}
               >
                 {/* Layer 1: Background Image */}
                 <img
@@ -645,7 +660,7 @@ export default function TextBehindSubject({
                     height: "100%",
                     objectFit: ratio === "Original" ? "fill" : "cover",
                     zIndex: 1,
-                    filter: bgBlur > 0 ? `blur(${bgBlur}px)` : "none",
+                    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) ${sharpen > 0 ? "url(#sharpen-effect)" : ""} ${bgBlur > 0 ? `blur(${bgBlur}px)` : ""}`,
                     transform: bgBlur > 0 ? "scale(1.04)" : "scale(1)",
                     transition: "filter 150ms ease-out, transform 150ms ease-out",
                   }}
@@ -718,6 +733,7 @@ export default function TextBehindSubject({
                       objectFit: ratio === "Original" ? "fill" : "cover",
                       zIndex: 3,
                       pointerEvents: "none",
+                      filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) ${sharpen > 0 ? "url(#sharpen-effect)" : ""}`,
                     }}
                     className="select-none"
                   />
@@ -939,12 +955,12 @@ export default function TextBehindSubject({
           </div>
         </div>
 
-        {/* TAB HEADER BAR — 3 tabs: Text, Style, Position */}
+        {/* TAB HEADER BAR — 3 tabs: Text, Image, Settings */}
         <div className="flex border-b border-gray-150 bg-gray-50">
           {[
             { id: "text", label: "Text", icon: Type },
-            { id: "style", label: "Style", icon: CaseUpper },
-            { id: "position", label: "Position", icon: Sliders },
+            { id: "image", label: "Image", icon: Camera },
+            { id: "settings", label: "Settings", icon: Sliders },
           ].map((tab) => {
             const Active = activeTab === tab.id;
             const IconComp = tab.icon;
@@ -1127,9 +1143,100 @@ export default function TextBehindSubject({
             </div>
           )}
 
-          {/* TAB 2: STYLE SETTINGS */}
-          {activeTab === "style" && selectedLayer && (
+          {/* TAB 2: IMAGE PROCESSING SUITE */}
+          {activeTab === "image" && (
             <div className="flex flex-col gap-4 animate-fade-in">
+              {/* Magic Enhance Action */}
+              <div className="bg-gray-50 border border-gray-150 p-3 rounded-xl flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold uppercase tracking-wider text-gray-500">✨ Magic Auto-Enhance</span>
+                  <button
+                    onClick={() => {
+                      setBrightness(1.1);
+                      setContrast(1.2);
+                      setSaturation(1.1);
+                      setSharpen(0.4);
+                    }}
+                    className="bg-black hover:bg-black/90 active:scale-[0.95] text-white text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer transition-all shadow-sm"
+                  >
+                    ✨ Auto-Enhance
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400 font-sans leading-relaxed">
+                  Automatically adjust brightness, contrast, and saturation levels to make colors pop.
+                </p>
+              </div>
+
+              {/* High-End Sliders */}
+              <div>
+                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  <span>Brightness</span>
+                  <span className="font-mono text-black">{Math.round(brightness * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.05"
+                  value={brightness}
+                  onChange={(e) => setBrightness(parseFloat(e.target.value))}
+                  className="w-full accent-black cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  <span>Contrast</span>
+                  <span className="font-mono text-black">{Math.round(contrast * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.05"
+                  value={contrast}
+                  onChange={(e) => setContrast(parseFloat(e.target.value))}
+                  className="w-full accent-black cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  <span>Saturation</span>
+                  <span className="font-mono text-black">{Math.round(saturation * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="2.0"
+                  step="0.05"
+                  value={saturation}
+                  onChange={(e) => setSaturation(parseFloat(e.target.value))}
+                  className="w-full accent-black cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  <span>Sharpen Intensity</span>
+                  <span className="font-mono text-black">{sharpen.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.00"
+                  max="2.00"
+                  step="0.05"
+                  value={sharpen}
+                  onChange={(e) => setSharpen(parseFloat(e.target.value))}
+                  className="w-full accent-black cursor-pointer"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: SETTINGS & TRANSFORMING */}
+          {activeTab === "settings" && selectedLayer && (
+            <div className="flex flex-col gap-4 animate-fade-in overflow-y-auto max-h-[50vh] pr-0.5 scrollbar-thin">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Style Toggles</label>
                 <div className="flex gap-2">
@@ -1225,6 +1332,37 @@ export default function TextBehindSubject({
                 </div>
               </div>
 
+              <div>
+                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  <span>Additional Scale Factor</span>
+                  <span className="font-mono text-black">{selectedLayer.scale.toFixed(1)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.4"
+                  max="4.0"
+                  step="0.1"
+                  value={selectedLayer.scale}
+                  onChange={(e) => updateSelectedLayer({ scale: parseFloat(e.target.value) })}
+                  className="w-full accent-black cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                  <span>Text Orientation Rotation</span>
+                  <span className="font-mono text-black">{selectedLayer.rotation}°</span>
+                </div>
+                <input
+                  type="range"
+                  min="-180"
+                  max="180"
+                  value={selectedLayer.rotation}
+                  onChange={(e) => updateSelectedLayer({ rotation: parseInt(e.target.value) })}
+                  className="w-full accent-black cursor-pointer"
+                />
+              </div>
+
               <div className="border-t border-gray-100 pt-3">
                 <div className="flex justify-between items-center mb-2">
                   <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Glow Neon Effect</label>
@@ -1297,70 +1435,7 @@ export default function TextBehindSubject({
                 )}
               </div>
 
-              {/* Quick Actions */}
-              <div>
-                <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">⚡ Quick Actions</span>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={handleAutoFitText}
-                    className="px-3 py-2 text-xs bg-gray-50 border border-gray-200 font-semibold text-black rounded-lg hover:bg-gray-100 flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <CaseUpper className="w-3.5 h-3.5 text-gray-500" />
-                    Auto Fit Size
-                  </button>
-                  <button
-                    onClick={handleAutoColor}
-                    className="px-3 py-2 text-xs bg-gray-50 border border-gray-200 font-semibold text-black rounded-lg hover:bg-gray-100 flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <Paintbrush className="w-3.5 h-3.5 text-gray-500" />
-                    Cycle Smart Colors
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 3: POSITION & SCALING */}
-          {activeTab === "position" && selectedLayer && (
-            <div className="flex flex-col gap-4 animate-fade-in">
-              <div className="bg-gray-50 p-3 rounded-lg border border-gray-150 flex items-center gap-2">
-                <Move className="w-4 h-4 text-black shrink-0" />
-                <span className="text-xs text-gray-600 leading-relaxed font-sans font-medium">
-                  <strong>PRO-TIP:</strong> Drag the text freely directly on the canvas preview to position it anywhere!
-                </span>
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  <span>Additional Scale Factor</span>
-                  <span className="font-mono text-black">{selectedLayer.scale.toFixed(1)}x</span>
-                </div>
-                <input
-                  type="range"
-                  min="0.4"
-                  max="4.0"
-                  step="0.1"
-                  value={selectedLayer.scale}
-                  onChange={(e) => updateSelectedLayer({ scale: parseFloat(e.target.value) })}
-                  className="w-full accent-black cursor-pointer"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  <span>Text Orientation Rotation</span>
-                  <span className="font-mono text-black">{selectedLayer.rotation}°</span>
-                </div>
-                <input
-                  type="range"
-                  min="-180"
-                  max="180"
-                  value={selectedLayer.rotation}
-                  onChange={(e) => updateSelectedLayer({ rotation: parseInt(e.target.value) })}
-                  className="w-full accent-black cursor-pointer"
-                />
-              </div>
-
+              {/* Smart Reposition Targets */}
               <div className="border-t border-gray-100 pt-3">
                 <span className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Smart Reposition Targets</span>
                 <div className="grid grid-cols-2 gap-2">
@@ -1484,6 +1559,13 @@ export default function TextBehindSubject({
         </div>
 
       </div>
+
+      {/* Dynamic SVG Filter for sharpening */}
+      <svg style={{ position: "absolute", width: 0, height: 0, pointerEvents: "none" }}>
+        <filter id="sharpen-effect">
+          <feConvolveMatrix order="3" kernelMatrix={sharpenKernel} preserveAlpha="true" />
+        </filter>
+      </svg>
 
     </div>
   );
