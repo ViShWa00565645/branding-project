@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "../utils/supabaseClient";
+import { getDeviceId } from "../utils/auth";
 import {
   Download, Loader2, ImageOff, Instagram, Linkedin,
   RefreshCw, Clock, Layers, ExternalLink, Sparkles,
@@ -14,6 +15,7 @@ interface HistoryRow {
   url: string;
   caption: string;
   created_at: string;
+  device_id?: string;
 }
 
 /* ────────────────────────────────────────────
@@ -31,7 +33,9 @@ export default function Gallery() {
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
 
-  /* ── Fetch all history rows from Supabase ── */
+  const [hiddenIds, setHiddenIds] = useState<Set<number>>(new Set());
+
+  /* ── Fetch history rows from Supabase filtered by this device ── */
   const fetchHistory = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -39,10 +43,12 @@ export default function Gallery() {
       const { data, error: fetchError } = await supabase
         .from("history")
         .select("*")
+        .eq("device_id", getDeviceId())
         .order("created_at", { ascending: false });
 
       if (fetchError) throw fetchError;
       setItems((data as HistoryRow[]) || []);
+      setHiddenIds(new Set());
     } catch (err: any) {
       console.error("Gallery fetch error:", err);
       setError(err.message || "Failed to load gallery");
@@ -62,7 +68,10 @@ export default function Gallery() {
         { event: "INSERT", schema: "public", table: "history" },
         (payload: any) => {
           const newRow = payload.new as HistoryRow;
-          setItems((prev) => [newRow, ...prev]);
+          // Only add to gallery if it belongs to this device
+          if (newRow.device_id === getDeviceId()) {
+            setItems((prev) => [newRow, ...prev]);
+          }
         }
       )
       .on(
@@ -144,6 +153,8 @@ export default function Gallery() {
   };
   const handleImageError = (id: number) => {
     setImageLoadStates((prev) => ({ ...prev, [id]: "error" }));
+    // Hide broken/deleted images completely
+    setHiddenIds((prev) => new Set(prev).add(id));
   };
 
   /* ── Format relative time ── */
@@ -166,9 +177,10 @@ export default function Gallery() {
     setLightboxItem(item);
   };
 
-  /* ── Masonry column distribution (3 columns) ── */
+  /* ── Masonry column distribution (3 columns), excluding hidden/broken images ── */
+  const visibleItems = items.filter((item) => !hiddenIds.has(item.id));
   const columns: HistoryRow[][] = [[], [], []];
-  items.forEach((item, idx) => {
+  visibleItems.forEach((item, idx) => {
     columns[idx % 3].push(item);
   });
 
@@ -273,8 +285,8 @@ export default function Gallery() {
               </div>
             </div>
             <p className="text-sm font-medium max-w-lg leading-relaxed" style={{ color: "rgba(255,255,255,0.35)" }}>
-              {items.length > 0
-                ? `${items.length} ${items.length === 1 ? "masterpiece" : "masterpieces"} curated in your cloud collection. Every export syncs in real-time across all devices.`
+              {visibleItems.length > 0
+                ? `${visibleItems.length} ${visibleItems.length === 1 ? "masterpiece" : "masterpieces"} curated in your private cloud collection.`
                 : "Your cloud gallery awaits its first creation. Export a poster from the Editor to begin."}
             </p>
           </div>
@@ -387,7 +399,7 @@ export default function Gallery() {
       {/* ═══════════════════════════════════════
           EMPTY STATE
          ═══════════════════════════════════════ */}
-      {!loading && !error && items.length === 0 && (
+      {!loading && !error && visibleItems.length === 0 && (
         <div className="flex flex-col items-center justify-center py-32 gap-6">
           <div
             className="w-28 h-28 rounded-3xl flex items-center justify-center relative"
@@ -426,7 +438,7 @@ export default function Gallery() {
       {/* ═══════════════════════════════════════
           MASONRY GRID
          ═══════════════════════════════════════ */}
-      {!loading && !error && items.length > 0 && (
+      {!loading && !error && visibleItems.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
           {columns.map((col, colIdx) => (
             <div key={colIdx} className="flex flex-col gap-7">
@@ -472,13 +484,7 @@ export default function Gallery() {
                       </div>
                     )}
 
-                    {/* Error fallback */}
-                    {loadState === "error" && (
-                      <div className="flex flex-col items-center justify-center py-24 px-6 gap-3">
-                        <ImageOff className="w-8 h-8 text-gray-300" />
-                        <span className="text-[10px] text-gray-400 font-bold">Image unavailable</span>
-                      </div>
-                    )}
+                    {/* Broken images are hidden completely via hiddenIds filter — no error fallback needed */}
 
                     {/* The poster image */}
                     <img

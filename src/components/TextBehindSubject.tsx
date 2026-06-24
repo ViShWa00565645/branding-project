@@ -3,6 +3,7 @@ import { GOOGLE_FONTS, loadGoogleFont } from "../utils/fonts";
 import { AspectRatio, ASPECT_RATIO_PRESETS, TextConfig } from "../types";
 import { generateCutout, exportComposite, BrushStroke } from "../utils/canvasHelper";
 import { supabase } from "../utils/supabaseClient";
+import { getDeviceId } from "../utils/auth";
 import {
   Type, CaseUpper, Paintbrush, Sliders, Move, RefreshCw,
   Download, AlertCircle, Trash2, Eye, EyeOff, Upload,
@@ -501,6 +502,7 @@ export default function TextBehindSubject({
             url: publicUrl,
             caption: selectedLayer?.text || textLayers[0]?.text || "Untitled Poster",
             created_at: new Date().toISOString(),
+            device_id: getDeviceId(),
           });
 
           if (dbError) {

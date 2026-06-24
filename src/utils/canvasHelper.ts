@@ -67,6 +67,10 @@ export async function generateCutout(
     canvas.width = w;
     canvas.height = h;
 
+    // Enforce high quality smoothing during full-res scaling
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
     // Draw the cutout scaled back to the original full-resolution (naturalWidth/Height)
     ctx.drawImage(imgObj, 0, 0, w, h);
     URL.revokeObjectURL(blobUrl);
@@ -189,270 +193,264 @@ export async function exportComposite(
     sharpen: number;
   }
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const bgImg = new Image();
-    bgImg.crossOrigin = "anonymous";
-    bgImg.src = backgroundSrc;
+  // 1. Preload both images using Promise.all to ensure background and cutout are 100% loaded
+  const loadImg = (src: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = (e) => reject(new Error(`Failed to load image: ${src}`));
+      img.src = src;
+    });
+  };
 
-    bgImg.onload = () => {
-      const cutoutImg = new Image();
-      cutoutImg.crossOrigin = "anonymous";
+  const promises: [Promise<HTMLImageElement>, Promise<HTMLImageElement | null>] = [
+    loadImg(backgroundSrc),
+    cutoutSrc ? loadImg(cutoutSrc).catch(() => null) : Promise.resolve(null)
+  ];
 
-      const proceed = () => {
-        // ─── 0. Resolution baseline — set canvas dimensions exactly to bgImg.naturalWidth and bgImg.naturalHeight ───
-        let canvasW = bgImg.naturalWidth;
-        let canvasH = bgImg.naturalHeight;
-        let sourceX = 0;
-        let sourceY = 0;
-        let sourceW = bgImg.naturalWidth;
-        let sourceH = bgImg.naturalHeight;
+  const [bgImg, cutoutImg] = await Promise.all(promises);
+  if (!bgImg) {
+    throw new Error("Failed to load background source image");
+  }
 
-        // ─── 1. Aspect-ratio crop math at full native resolution ───
-        if (targetRatio) {
-          const currentRatio = sourceW / sourceH;
-          if (currentRatio > targetRatio) {
-            const croppedW = sourceH * targetRatio;
-            sourceX = (sourceW - croppedW) / 2;
-            sourceW = croppedW;
-            canvasW = Math.round(croppedW);
-            canvasH = Math.round(sourceH);
-          } else {
-            const croppedH = sourceW / targetRatio;
-            sourceY = (sourceH - croppedH) / 2;
-            sourceH = croppedH;
-            canvasW = Math.round(sourceW);
-            canvasH = Math.round(croppedH);
-          }
-        }
+  // ─── 0. Resolution baseline — set canvas dimensions exactly to bgImg.naturalWidth and bgImg.naturalHeight ───
+  let canvasW = bgImg.naturalWidth;
+  let canvasH = bgImg.naturalHeight;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceW = bgImg.naturalWidth;
+  let sourceH = bgImg.naturalHeight;
 
-        // ─── 2. Create the export canvas ───
-        const canvas = document.createElement("canvas");
-        canvas.width = canvasW;
-        canvas.height = canvasH;
-        const ctx = canvas.getContext("2d", { alpha: true });
-        if (!ctx) {
-          reject("Could not create high resolution rendering canvas context");
-          return;
-        }
+  // ─── 1. Aspect-ratio crop math at full native resolution ───
+  if (targetRatio) {
+    const currentRatio = sourceW / sourceH;
+    if (currentRatio > targetRatio) {
+      const croppedW = sourceH * targetRatio;
+      sourceX = (sourceW - croppedW) / 2;
+      sourceW = croppedW;
+      canvasW = Math.round(croppedW);
+      canvasH = Math.round(sourceH);
+    } else {
+      const croppedH = sourceW / targetRatio;
+      sourceY = (sourceH - croppedH) / 2;
+      sourceH = croppedH;
+      canvasW = Math.round(sourceW);
+      canvasH = Math.round(croppedH);
+    }
+  }
 
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
+  // ─── 2. Create the export canvas ───
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  const ctx = canvas.getContext("2d", { alpha: true });
+  if (!ctx) {
+    throw new Error("Could not create high resolution rendering canvas context");
+  }
 
-        // ─── 3. Layer 1 — Background (with optional DSLR blur & adjustments) ───
-        const scaleFactor = canvasW / displayWidthRef;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 
-        // Build combined filter string
-        let filterString = "";
-        if (filters) {
-          filterString += `brightness(${filters.brightness}) contrast(${filters.contrast}) saturate(${filters.saturation}) `;
-          if (filters.sharpen > 0) {
-            filterString += `url(#sharpen-effect) `;
-          }
-        }
+  // ─── 3. Layer 1 — Background (with optional DSLR blur & adjustments) ───
+  const scaleFactor = canvasW / displayWidthRef;
 
-        if (backgroundBlur && backgroundBlur > 0) {
-          const scaledBlur = backgroundBlur * scaleFactor;
-          ctx.save();
-          ctx.filter = `${filterString}blur(${scaledBlur}px)`.trim();
-          const offset = scaledBlur * 2;
-          ctx.drawImage(
-            bgImg,
-            sourceX, sourceY, sourceW, sourceH,
-            -offset, -offset,
-            canvasW + offset * 2,
-            canvasH + offset * 2
-          );
-          ctx.restore();
-        } else {
-          ctx.save();
-          if (filterString) {
-            ctx.filter = filterString.trim();
-          }
-          ctx.drawImage(bgImg, sourceX, sourceY, sourceW, sourceH, 0, 0, canvasW, canvasH);
-          ctx.restore();
-        }
+  // Build combined filter string
+  let filterString = "";
+  if (filters) {
+    filterString += `brightness(${filters.brightness}) contrast(${filters.contrast}) saturate(${filters.saturation}) `;
+    if (filters.sharpen > 0) {
+      filterString += `url(#sharpen-effect) `;
+    }
+  }
 
-        ctx.filter = "none";
+  if (backgroundBlur && backgroundBlur > 0) {
+    const scaledBlur = backgroundBlur * scaleFactor;
+    ctx.save();
+    ctx.filter = `${filterString}blur(${scaledBlur}px)`.trim();
+    const offset = scaledBlur * 2;
+    ctx.drawImage(
+      bgImg,
+      sourceX, sourceY, sourceW, sourceH,
+      -offset, -offset,
+      canvasW + offset * 2,
+      canvasH + offset * 2
+    );
+    ctx.restore();
+  } else {
+    ctx.save();
+    if (filterString) {
+      ctx.filter = filterString.trim();
+    }
+    ctx.drawImage(bgImg, sourceX, sourceY, sourceW, sourceH, 0, 0, canvasW, canvasH);
+    ctx.restore();
+  }
 
-        // ─── 4. Layer 2 — TRIPLE-PASS Text Rendering ───
-        const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
+  ctx.filter = "none";
 
-        textConfigs.forEach((t) => {
-          const tx = (t.x / 100) * canvasW;
-          const ty = (t.y / 100) * canvasH;
-          const finalFontSize = t.fontSize * scaleFactor * t.scale;
-          const resolvedWeight = (t.isBold && t.fontWeight < 700) ? 900 : t.fontWeight;
-          const italicPrefix = t.isItalic ? "italic " : "";
+  // ─── 4. Layer 2 — TRIPLE-PASS Text Rendering ───
+  const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
 
-          // Triple-Pass: draw text 3 times for solid, sharp font texture
-          for (let pass = 0; pass < 3; pass++) {
-            ctx.save();
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = "high";
+  textConfigs.forEach((t) => {
+    const tx = (t.x / 100) * canvasW;
+    const ty = (t.y / 100) * canvasH;
+    const finalFontSize = t.fontSize * scaleFactor * t.scale;
+    const resolvedWeight = (t.isBold && t.fontWeight < 700) ? 900 : t.fontWeight;
+    const italicPrefix = t.isItalic ? "italic " : "";
 
-            // Set font and letter spacing first to accurately measure text metrics
-            ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
-            if (t.letterSpacing !== undefined) {
-              (ctx as any).letterSpacing = `${t.letterSpacing * scaleFactor}px`;
-            }
+    // Triple-Pass: draw text 3 times for solid, sharp font texture
+    for (let pass = 0; pass < 3; pass++) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
 
-            const textMetrics = ctx.measureText(t.text);
-            const textWidth = textMetrics.width;
-
-            // Bounding box dimensions for alignment check (accounting for letter width/height)
-            const halfW = textWidth / 2;
-            const halfH = (finalFontSize * (t.heightScale || 1)) / 2;
-
-            // Constrain adjusted translation coordinates to prevent clipping on the canvas edges
-            let adjustedTx = tx;
-            let adjustedTy = ty;
-
-            if (adjustedTx - halfW < 0) {
-              adjustedTx = halfW;
-            } else if (adjustedTx + halfW > canvasW) {
-              adjustedTx = canvasW - halfW;
-            }
-
-            if (adjustedTy - halfH < 0) {
-              adjustedTy = halfH;
-            } else if (adjustedTy + halfH > canvasH) {
-              adjustedTy = canvasH - halfH;
-            }
-
-            // Apply translation, rotation, and scaling transformations safely inside save/restore
-            ctx.translate(adjustedTx, adjustedTy);
-            ctx.rotate((t.rotation * Math.PI) / 180);
-
-            // Apply vertical stretch
-            if (t.heightScale && t.heightScale !== 1) {
-              ctx.scale(1, t.heightScale);
-            }
-
-            ctx.textBaseline = "middle";
-            ctx.textAlign = "center";
-            ctx.globalAlpha = t.opacity;
-
-            // Shadow / Glow (High-DPI scaled)
-            if (pass === 0) {
-              if (t.glowEnabled) {
-                ctx.shadowColor = t.glowColor;
-                ctx.shadowBlur = t.glowBlur * scaleFactor;
-                ctx.shadowOffsetX = 0;
-                ctx.shadowOffsetY = 0;
-              } else if (t.shadowBlur > 0 || t.shadowOffsetX !== 0 || t.shadowOffsetY !== 0) {
-                ctx.shadowColor = t.shadowColor;
-                ctx.shadowBlur = t.shadowBlur * scaleFactor;
-                ctx.shadowOffsetX = t.shadowOffsetX * scaleFactor;
-                ctx.shadowOffsetY = t.shadowOffsetY * scaleFactor;
-              }
-            } else {
-              ctx.shadowColor = "transparent";
-              ctx.shadowBlur = 0;
-            }
-
-            // Fill text
-            ctx.fillStyle = t.color;
-            ctx.fillText(t.text, 0, 0);
-
-            // Bold stroke overlay with High-DPI scaled strokeWidth (first pass only)
-            if (pass === 0 && t.isBold) {
-              ctx.shadowColor = "transparent";
-              ctx.shadowBlur = 0;
-              ctx.strokeStyle = t.color;
-              const strokeWidth = Math.max(1, 2 * scaleFactor);
-              ctx.lineWidth = strokeWidth;
-              ctx.lineJoin = "round";
-              ctx.strokeText(t.text, 0, 0);
-            }
-
-            // Underline with High-DPI scaled metrics (first pass only)
-            if (pass === 0 && t.isUnderline) {
-              ctx.shadowColor = "transparent";
-              ctx.shadowBlur = 0;
-              const underlineY = finalFontSize / 1.7;
-              ctx.beginPath();
-              ctx.moveTo(-textWidth / 2, underlineY);
-              ctx.lineTo(textWidth / 2, underlineY);
-              ctx.strokeStyle = t.color;
-              ctx.lineWidth = Math.max(2, finalFontSize / 15);
-              ctx.lineCap = "round";
-              ctx.stroke();
-            }
-
-            ctx.restore();
-          }
-        });
-
-        // ─── 5. Layer 3 — Subject cutout overlay ───
-        if (cutoutSrc && cutoutImg.complete && cutoutImg.naturalWidth > 0) {
-          ctx.save();
-          ctx.globalCompositeOperation = "source-over";
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = "high";
-          ctx.globalAlpha = 1.0;
-
-          if (filterString) {
-            ctx.filter = filterString.trim();
-          }
-
-          let cutoutSourceX = 0;
-          let cutoutSourceY = 0;
-          let cutoutSourceW = cutoutImg.naturalWidth;
-          let cutoutSourceH = cutoutImg.naturalHeight;
-
-          if (targetRatio) {
-            const currentRatio = cutoutSourceW / cutoutSourceH;
-            if (currentRatio > targetRatio) {
-              const croppedW = cutoutSourceH * targetRatio;
-              cutoutSourceX = (cutoutSourceW - croppedW) / 2;
-              cutoutSourceW = croppedW;
-            } else {
-              const croppedH = cutoutSourceW / targetRatio;
-              cutoutSourceY = (cutoutSourceH - croppedH) / 2;
-              cutoutSourceH = croppedH;
-            }
-          }
-
-          ctx.drawImage(
-            cutoutImg,
-            cutoutSourceX, cutoutSourceY, cutoutSourceW, cutoutSourceH,
-            0, 0, canvasW, canvasH
-          );
-          ctx.restore();
-        }
-
-        // ─── 6. Encode & export ───
-        const mime = format === "jpeg" ? "image/jpeg" : "image/png";
-        const quality = format === "jpeg" ? 0.98 : undefined;
-
-        canvas.toBlob(
-          (blob) => {
-            if (blob) {
-              const url = URL.createObjectURL(blob);
-              resolve(url);
-            } else {
-              reject("Failed to compile final image canvas data");
-            }
-          },
-          mime,
-          quality
-        );
-      };
-
-      if (cutoutSrc) {
-        cutoutImg.onload = proceed;
-        cutoutImg.onerror = () => {
-          console.warn("Cutout image failed to load, exporting with text only");
-          proceed();
-        };
-        cutoutImg.src = cutoutSrc;
-      } else {
-        proceed();
+      // Set font and letter spacing first to accurately measure text metrics
+      ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
+      if (t.letterSpacing !== undefined) {
+        (ctx as any).letterSpacing = `${t.letterSpacing * scaleFactor}px`;
       }
-    };
 
-    bgImg.onerror = () => {
-      reject("Failed to load background source image for composite");
-    };
+      const textMetrics = ctx.measureText(t.text);
+      const textWidth = textMetrics.width;
+
+      // Bounding box dimensions for alignment check (accounting for letter width/height)
+      const halfW = textWidth / 2;
+      const halfH = (finalFontSize * (t.heightScale || 1)) / 2;
+
+      // Constrain adjusted translation coordinates to prevent clipping on the canvas edges
+      let adjustedTx = tx;
+      let adjustedTy = ty;
+
+      if (adjustedTx - halfW < 0) {
+        adjustedTx = halfW;
+      } else if (adjustedTx + halfW > canvasW) {
+        adjustedTx = canvasW - halfW;
+      }
+
+      if (adjustedTy - halfH < 0) {
+        adjustedTy = halfH;
+      } else if (adjustedTy + halfH > canvasH) {
+        adjustedTy = canvasH - halfH;
+      }
+
+      // Apply translation, rotation, and scaling transformations safely inside save/restore
+      ctx.translate(adjustedTx, adjustedTy);
+      ctx.rotate((t.rotation * Math.PI) / 180);
+
+      // Apply vertical stretch
+      if (t.heightScale && t.heightScale !== 1) {
+        ctx.scale(1, t.heightScale);
+      }
+
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.globalAlpha = t.opacity;
+
+      // Shadow / Glow (High-DPI scaled)
+      if (pass === 0) {
+        if (t.glowEnabled) {
+          ctx.shadowColor = t.glowColor;
+          ctx.shadowBlur = t.glowBlur * scaleFactor;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+        } else if (t.shadowBlur > 0 || t.shadowOffsetX !== 0 || t.shadowOffsetY !== 0) {
+          ctx.shadowColor = t.shadowColor;
+          ctx.shadowBlur = t.shadowBlur * scaleFactor;
+          ctx.shadowOffsetX = t.shadowOffsetX * scaleFactor;
+          ctx.shadowOffsetY = t.shadowOffsetY * scaleFactor;
+        }
+      } else {
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+      }
+
+      // Fill text
+      ctx.fillStyle = t.color;
+      ctx.fillText(t.text, 0, 0);
+
+      // Bold stroke overlay with High-DPI scaled strokeWidth (first pass only)
+      if (pass === 0 && t.isBold) {
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = t.color;
+        const strokeWidth = Math.max(1, 2 * scaleFactor);
+        ctx.lineWidth = strokeWidth;
+        ctx.lineJoin = "round";
+        ctx.strokeText(t.text, 0, 0);
+      }
+
+      // Underline with High-DPI scaled metrics (first pass only)
+      if (pass === 0 && t.isUnderline) {
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        const underlineY = finalFontSize / 1.7;
+        ctx.beginPath();
+        ctx.moveTo(-textWidth / 2, underlineY);
+        ctx.lineTo(textWidth / 2, underlineY);
+        ctx.strokeStyle = t.color;
+        ctx.lineWidth = Math.max(2, finalFontSize / 15);
+        ctx.lineCap = "round";
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+  });
+
+  // ─── 5. Layer 3 — Subject cutout overlay ───
+  if (cutoutImg) {
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.globalAlpha = 1.0;
+
+    if (filterString) {
+      ctx.filter = filterString.trim();
+    }
+
+    let cutoutSourceX = 0;
+    let cutoutSourceY = 0;
+    let cutoutSourceW = cutoutImg.naturalWidth;
+    let cutoutSourceH = cutoutImg.naturalHeight;
+
+    if (targetRatio) {
+      const currentRatio = cutoutSourceW / cutoutSourceH;
+      if (currentRatio > targetRatio) {
+        const croppedW = cutoutSourceH * targetRatio;
+        cutoutSourceX = (cutoutSourceW - croppedW) / 2;
+        cutoutSourceW = croppedW;
+      } else {
+        const croppedH = cutoutSourceW / targetRatio;
+        cutoutSourceY = (cutoutSourceH - croppedH) / 2;
+        cutoutSourceH = croppedH;
+      }
+    }
+
+    ctx.drawImage(
+      cutoutImg,
+      cutoutSourceX, cutoutSourceY, cutoutSourceW, cutoutSourceH,
+      0, 0, canvasW, canvasH
+    );
+    ctx.restore();
+  }
+
+  // ─── 6. Encode & export ───
+  const mime = format === "jpeg" ? "image/jpeg" : "image/png";
+  const quality = format === "jpeg" ? 0.98 : undefined;
+
+  return new Promise<string>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          resolve(url);
+        } else {
+          reject(new Error("Failed to compile final image canvas data"));
+        }
+      },
+      mime,
+      quality
+    );
   });
 }
