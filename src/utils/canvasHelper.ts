@@ -255,19 +255,22 @@ export async function exportComposite(
   // ─── 3. Layer 1 — Background (with optional DSLR blur & adjustments) ───
   const scaleFactor = canvasW / displayWidthRef;
 
-  // Build combined filter string
+  // Build combined filter string using percentages for contrast and saturation to guarantee proper canvas rendering
   let filterString = "";
   if (filters) {
-    filterString += `brightness(${filters.brightness}) contrast(${filters.contrast}) saturate(${filters.saturation}) `;
+    const b = filters.brightness;
+    const c = Math.round(filters.contrast * 100);
+    const s = Math.round(filters.saturation * 100);
+    filterString = `brightness(${b}) contrast(${c}%) saturate(${s}%)`;
     if (filters.sharpen > 0) {
-      filterString += `url(#sharpen-effect) `;
+      filterString += ` url(#sharpen-effect)`;
     }
   }
 
   if (backgroundBlur && backgroundBlur > 0) {
     const scaledBlur = backgroundBlur * scaleFactor;
     ctx.save();
-    ctx.filter = `${filterString}blur(${scaledBlur}px)`.trim();
+    ctx.filter = filterString ? `${filterString} blur(${scaledBlur}px)` : `blur(${scaledBlur}px)`;
     const offset = scaledBlur * 2;
     ctx.drawImage(
       bgImg,
@@ -280,7 +283,7 @@ export async function exportComposite(
   } else {
     ctx.save();
     if (filterString) {
-      ctx.filter = filterString.trim();
+      ctx.filter = filterString;
     }
     ctx.drawImage(bgImg, sourceX, sourceY, sourceW, sourceH, 0, 0, canvasW, canvasH);
     ctx.restore();
