@@ -61,31 +61,45 @@ export default function TextBehindSubject({
   const [brushSize, setBrushSize] = useState<number>(8);
   const [strokes, setStrokes] = useState<BrushStroke[]>([]);
 
-  // Text configuration state
-  const [textConfig, setTextConfig] = useState<TextConfig>({
-    text: "POSTER",
-    fontSize: 120,
-    fontWeight: 800,
-    fontFamily: "Space Grotesk",
-    isBold: false,
-    isItalic: false,
-    isUnderline: false,
-    color: "#ffffff",
-    opacity: 1,
-    letterSpacing: 2,
-    lineHeight: 1.2,
-    shadowColor: "rgba(0,0,0,0.4)",
-    shadowBlur: 10,
-    shadowOffsetX: 4,
-    shadowOffsetY: 4,
-    glowEnabled: false,
-    glowColor: "#ffffff",
-    glowBlur: 15,
-    x: 50,
-    y: 45,
-    rotation: 0,
-    scale: 1,
-  });
+  // Text layers state
+  const [textLayers, setTextLayers] = useState<TextConfig[]>([
+    {
+      id: "1",
+      text: "POSTER",
+      fontSize: 120,
+      fontWeight: 800,
+      fontFamily: "Space Grotesk",
+      isBold: false,
+      isItalic: false,
+      isUnderline: false,
+      color: "#ffffff",
+      opacity: 1,
+      letterSpacing: 2,
+      lineHeight: 1.2,
+      shadowColor: "rgba(0,0,0,0.4)",
+      shadowBlur: 10,
+      shadowOffsetX: 4,
+      shadowOffsetY: 4,
+      glowEnabled: false,
+      glowColor: "#ffffff",
+      glowBlur: 15,
+      x: 50,
+      y: 45,
+      rotation: 0,
+      scale: 1,
+      heightScale: 1,
+    }
+  ]);
+  const [selectedLayerId, setSelectedLayerId] = useState<string>("1");
+
+  const selectedLayer = textLayers.find((l) => l.id === selectedLayerId) || textLayers[0] || null;
+
+  const updateSelectedLayer = (updates: Partial<TextConfig>) => {
+    if (!selectedLayerId) return;
+    setTextLayers((prev) =>
+      prev.map((l) => (l.id === selectedLayerId ? { ...l, ...updates } : l))
+    );
+  };
 
   // Automatically dismiss the mobile virtual keyboard
   useEffect(() => {
@@ -133,8 +147,10 @@ export default function TextBehindSubject({
 
   // Initialize and load default baseline fonts
   useEffect(() => {
-    loadGoogleFont(textConfig.fontFamily);
-  }, [textConfig.fontFamily]);
+    if (selectedLayer) {
+      loadGoogleFont(selectedLayer.fontFamily);
+    }
+  }, [selectedLayer?.fontFamily]);
 
   // Load the cutout when image, threshold, feather, or custom brush strokes change
   useEffect(() => {
@@ -180,34 +196,42 @@ export default function TextBehindSubject({
     reader.onload = () => {
       if (typeof reader.result === "string") {
         setSelectedImage(reader.result);
-        setTextConfig((prev) => ({
-          ...prev,
-          text: "POSTER",
-          fontSize: 120,
-          color: "#ffffff",
-          fontFamily: "Space Grotesk",
-          x: 50,
-          y: 40,
-        }));
+        setTextLayers((prev) =>
+          prev.map((l, idx) =>
+            idx === 0
+              ? {
+                  ...l,
+                  text: "POSTER",
+                  fontSize: 120,
+                  color: "#ffffff",
+                  fontFamily: "Space Grotesk",
+                  x: 50,
+                  y: 40,
+                }
+              : l
+          )
+        );
       }
     };
     reader.readAsDataURL(file);
   };
 
   // Direct Drag on Canvas text element
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>, layerId: string) => {
     if (brushMode !== "disabled") return;
     e.preventDefault();
     (document.activeElement as HTMLElement)?.blur();
-    const container = canvasContainerRef.current;
-    if (!container) return;
+    setSelectedLayerId(layerId);
+
+    const targetLayer = textLayers.find((l) => l.id === layerId);
+    if (!targetLayer || !canvasContainerRef.current) return;
 
     dragRef.current = {
       isDragging: true,
       startX: e.clientX,
       startY: e.clientY,
-      initialX: textConfig.x,
-      initialY: textConfig.y,
+      initialX: targetLayer.x,
+      initialY: targetLayer.y,
     };
 
     const handleMouseMove = (ev: MouseEvent) => {
@@ -225,11 +249,12 @@ export default function TextBehindSubject({
       targetX = Math.max(0, Math.min(100, targetX));
       targetY = Math.max(0, Math.min(100, targetY));
 
-      setTextConfig((prev) => ({
-        ...prev,
-        x: Math.round(targetX * 10) / 10,
-        y: Math.round(targetY * 10) / 10,
-      }));
+      const roundedX = Math.round(targetX * 10) / 10;
+      const roundedY = Math.round(targetY * 10) / 10;
+
+      setTextLayers((prev) =>
+        prev.map((l) => (l.id === layerId ? { ...l, x: roundedX, y: roundedY } : l))
+      );
     };
 
     const handleMouseUp = () => {
@@ -245,24 +270,26 @@ export default function TextBehindSubject({
   };
 
   // Touch handlers for responsive mobile dragging
-  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>, layerId: string) => {
     if (brushMode !== "disabled") return;
     if (e.touches.length !== 1) return;
     (document.activeElement as HTMLElement)?.blur();
-    const touch = e.touches[0];
-    const container = canvasContainerRef.current;
-    if (!container) return;
+    setSelectedLayerId(layerId);
 
+    const targetLayer = textLayers.find((l) => l.id === layerId);
+    if (!targetLayer || !canvasContainerRef.current) return;
+
+    const touch = e.touches[0];
     dragRef.current = {
       isDragging: true,
       startX: touch.clientX,
       startY: touch.clientY,
-      initialX: textConfig.x,
-      initialY: textConfig.y,
+      initialX: targetLayer.x,
+      initialY: targetLayer.y,
     };
   };
 
-  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>, layerId: string) => {
     if (!dragRef.current || !dragRef.current.isDragging || !canvasContainerRef.current) return;
     if (e.touches.length !== 1) return;
     const touch = e.touches[0];
@@ -278,11 +305,12 @@ export default function TextBehindSubject({
     targetX = Math.max(0, Math.min(100, targetX));
     targetY = Math.max(0, Math.min(100, targetY));
 
-    setTextConfig((prev) => ({
-      ...prev,
-      x: Math.round(targetX * 10) / 10,
-      y: Math.round(targetY * 10) / 10,
-    }));
+    const roundedX = Math.round(targetX * 10) / 10;
+    const roundedY = Math.round(targetY * 10) / 10;
+
+    setTextLayers((prev) =>
+      prev.map((l) => (l.id === layerId ? { ...l, x: roundedX, y: roundedY } : l))
+    );
   };
 
   const handleTouchEnd = () => {
@@ -333,20 +361,19 @@ export default function TextBehindSubject({
 
   // Smart placement & face protection logic
   const handleSmartFaceReposition = () => {
-    setTextConfig((prev) => {
-      const isPortrait = ratio === "9:16" || ratio === "4:5" || ratio === "2:3";
-      return {
-        ...prev,
-        x: 50,
-        y: isPortrait ? 25 : 20,
-        fontSize: Math.min(150, prev.fontSize),
-      };
+    if (!selectedLayerId) return;
+    const isPortrait = ratio === "9:16" || ratio === "4:5" || ratio === "2:3";
+    updateSelectedLayer({
+      x: 50,
+      y: isPortrait ? 25 : 20,
+      fontSize: selectedLayer ? Math.min(150, selectedLayer.fontSize) : 120,
     });
   };
 
   // Quick Action: Auto Fit
   const handleAutoFitText = () => {
-    const textLength = textConfig.text.length || 1;
+    if (!selectedLayer) return;
+    const textLength = selectedLayer.text.length || 1;
     let targetSize = 150;
     if (textLength > 6) {
       targetSize = 80;
@@ -356,33 +383,31 @@ export default function TextBehindSubject({
       targetSize = 180;
     }
 
-    setTextConfig((prev) => ({
-      ...prev,
+    updateSelectedLayer({
       fontSize: targetSize,
       scale: 1,
       letterSpacing: textLength > 5 ? 1 : 4,
-    }));
+    });
   };
 
   // Quick Action: Auto Center
   const handleAutoCenterText = () => {
-    setTextConfig((prev) => ({
-      ...prev,
+    updateSelectedLayer({
       x: 50,
       y: 48,
       rotation: 0,
-    }));
+    });
   };
 
   // Quick Action: Auto Color
   const handleAutoColor = () => {
+    if (!selectedLayer) return;
     const colors = ["#ffffff", "#facc15", "#f97316", "#3b82f6", "#10b981", "#ef4444", "#a855f7"];
-    const currentIndex = colors.indexOf(textConfig.color);
+    const currentIndex = colors.indexOf(selectedLayer.color);
     const nextIndex = (currentIndex + 1) % colors.length;
-    setTextConfig((prev) => ({
-      ...prev,
+    updateSelectedLayer({
       color: colors[nextIndex],
-    }));
+    });
   };
 
   // Reset Text Layout
@@ -409,7 +434,7 @@ export default function TextBehindSubject({
       const resultUrl = await exportComposite(
         selectedImage,
         behindSubjectEnabled ? cutoutUrl : null,
-        [textConfig],
+        textLayers,
         ratio,
         activeRatio.ratio,
         exportResolution,
@@ -459,7 +484,7 @@ export default function TextBehindSubject({
           // 4. Save the record (URL and Caption) in the 'history' table
           const { error: dbError } = await supabase.from("history").insert({
             url: publicUrl,
-            caption: textConfig.text || "Untitled Poster",
+            caption: selectedLayer?.text || textLayers[0]?.text || "Untitled Poster",
             created_at: new Date().toISOString(),
           });
 
@@ -637,35 +662,46 @@ export default function TextBehindSubject({
                   }`}
                 />
 
-                {/* Layer 2: Text Layer — draggable */}
-                <div
-                  id="canvas-draggable-text-element"
-                  onMouseDown={handleMouseDown}
-                  onTouchStart={handleTouchStart}
-                  onTouchMove={handleTouchMove}
-                  onTouchEnd={handleTouchEnd}
-                  style={{
-                    top: `${textConfig.y}%`,
-                    left: `${textConfig.x}%`,
-                    transform: `translate(-50%, -50%) rotate(${textConfig.rotation}deg) scale(${textConfig.scale})`,
-                    fontFamily: `"${textConfig.fontFamily}", sans-serif`,
-                    fontSize: `${textConfig.fontSize}px`,
-                    fontWeight: textConfig.fontWeight,
-                    color: textConfig.color,
-                    opacity: textConfig.opacity,
-                    letterSpacing: `${textConfig.letterSpacing}px`,
-                    lineHeight: textConfig.lineHeight,
-                    textDecoration: textConfig.isUnderline ? "underline" : "none",
-                    fontStyle: textConfig.isItalic ? "italic" : "normal",
-                    textShadow: textConfig.glowEnabled
-                      ? `0 0 ${textConfig.glowBlur}px ${textConfig.glowColor}`
-                      : `${textConfig.shadowOffsetX}px ${textConfig.shadowOffsetY}px ${textConfig.shadowBlur}px ${textConfig.shadowColor}`,
-                    zIndex: 2,
-                  }}
-                  className="absolute text-center select-none whitespace-nowrap cursor-grab active:cursor-grabbing font-sans origin-center"
-                >
-                  {textConfig.text || "POSTER"}
-                </div>
+                {/* Layer 2: Text Layers */}
+                {textLayers.map((layer) => {
+                  const isSelected = selectedLayerId === layer.id;
+                  return (
+                    <div
+                      key={layer.id}
+                      onMouseDown={(e) => handleMouseDown(e, layer.id)}
+                      onTouchStart={(e) => handleTouchStart(e, layer.id)}
+                      onTouchMove={(e) => handleTouchMove(e, layer.id)}
+                      onTouchEnd={handleTouchEnd}
+                      style={{
+                        top: `${layer.y}%`,
+                        left: `${layer.x}%`,
+                        transform: `translate(-50%, -50%) rotate(${layer.rotation}deg) scale(${layer.scale}) scaleY(${layer.heightScale || 1})`,
+                        fontFamily: `"${layer.fontFamily}", sans-serif`,
+                        fontSize: `${layer.fontSize}px`,
+                        fontWeight: layer.fontWeight,
+                        color: layer.color,
+                        opacity: layer.opacity,
+                        letterSpacing: `${layer.letterSpacing}px`,
+                        lineHeight: layer.lineHeight,
+                        textDecoration: layer.isUnderline ? "underline" : "none",
+                        fontStyle: layer.isItalic ? "italic" : "normal",
+                        textShadow: layer.glowEnabled
+                          ? `0 0 ${layer.glowBlur}px ${layer.glowColor}`
+                          : `${layer.shadowOffsetX}px ${layer.shadowOffsetY}px ${layer.shadowBlur}px ${layer.shadowColor}`,
+                        zIndex: 2,
+                        border: isSelected && brushMode === "disabled" ? "1.5px dashed #000000" : "none",
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        backgroundColor: isSelected && brushMode === "disabled" ? "rgba(255,255,255,0.15)" : "transparent",
+                      }}
+                      className={`absolute text-center select-none whitespace-nowrap font-sans origin-center ${
+                        brushMode === "disabled" ? "cursor-grab active:cursor-grabbing hover:bg-black/5" : ""
+                      }`}
+                    >
+                      {layer.text || "POSTER"}
+                    </div>
+                  );
+                })}
 
                 {/* Layer 3: Cutout Foreground Overlay */}
                 {behindSubjectEnabled && cutoutUrl && (
@@ -817,6 +853,92 @@ export default function TextBehindSubject({
         className="lg:col-span-5 flex flex-col bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden min-h-[400px]"
       >
 
+        {/* LAYER MANAGER SECTION */}
+        <div className="p-4 border-b border-gray-150 bg-gray-50/50">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <span className="text-[10px] font-black tracking-widest text-gray-400 uppercase">Text Layers</span>
+            <button
+              onClick={() => {
+                const newId = Date.now().toString();
+                const newLayer: TextConfig = {
+                  id: newId,
+                  text: `TEXT ${textLayers.length + 1}`,
+                  fontSize: 120,
+                  fontWeight: 800,
+                  fontFamily: selectedLayer?.fontFamily || "Space Grotesk",
+                  isBold: false,
+                  isItalic: false,
+                  isUnderline: false,
+                  color: "#ffffff",
+                  opacity: 1,
+                  letterSpacing: 2,
+                  lineHeight: 1.2,
+                  shadowColor: "rgba(0,0,0,0.4)",
+                  shadowBlur: 10,
+                  shadowOffsetX: 4,
+                  shadowOffsetY: 4,
+                  glowEnabled: false,
+                  glowColor: "#ffffff",
+                  glowBlur: 15,
+                  x: 50,
+                  y: 35 + (textLayers.length * 10) % 40,
+                  rotation: 0,
+                  scale: 1,
+                  heightScale: 1,
+                };
+                setTextLayers((prev) => [...prev, newLayer]);
+                setSelectedLayerId(newId);
+              }}
+              className="bg-black hover:bg-black/90 active:scale-[0.95] text-white text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 cursor-pointer transition-all shadow-3xs"
+            >
+              + Add New Text
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-1 max-h-[140px] overflow-y-auto pr-1 scrollbar-thin">
+            {textLayers.map((layer) => {
+              const active = selectedLayerId === layer.id;
+              return (
+                <div
+                  key={layer.id}
+                  onClick={() => setSelectedLayerId(layer.id)}
+                  className={`group flex items-center justify-between p-2 rounded-lg border text-xs font-semibold cursor-pointer transition-all ${
+                    active
+                      ? "bg-black border-black text-white"
+                      : "bg-white border-gray-200 text-gray-600 hover:border-gray-350 hover:text-black"
+                  }`}
+                >
+                  <span className="truncate max-w-[150px]">{layer.text || "Untitled text"}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-mono opacity-60">
+                      {layer.fontSize}px
+                    </span>
+                    {textLayers.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTextLayers((prev) => prev.filter((l) => l.id !== layer.id));
+                          if (active) {
+                            const remaining = textLayers.filter((l) => l.id !== layer.id);
+                            if (remaining.length > 0) {
+                              setSelectedLayerId(remaining[remaining.length - 1].id);
+                            }
+                          }
+                        }}
+                        className={`p-1 rounded-md hover:bg-red-500 hover:text-white transition-colors cursor-pointer ${
+                          active ? "text-gray-400 group-hover:text-gray-200" : "text-gray-400"
+                        }`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* TAB HEADER BAR — 3 tabs: Text, Style, Position */}
         <div className="flex border-b border-gray-150 bg-gray-50">
           {[
@@ -847,15 +969,15 @@ export default function TextBehindSubject({
         <div className="p-5 flex-1 flex flex-col justify-between">
 
           {/* TAB 1: TEXT SETTINGS */}
-          {activeTab === "text" && (
+          {activeTab === "text" && selectedLayer && (
             <div className="flex flex-col gap-4 animate-fade-in">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Enter Caption</label>
                 <input
                   type="text"
                   maxLength={40}
-                  value={textConfig.text}
-                  onChange={(e) => setTextConfig({ ...textConfig, text: e.target.value })}
+                  value={selectedLayer.text}
+                  onChange={(e) => updateSelectedLayer({ text: e.target.value })}
                   placeholder="e.g. FOCUS, RUN, LION"
                   className="w-full text-sm border border-gray-200 p-2.5 rounded-lg focus:outline-none focus:border-black font-semibold text-black uppercase"
                 />
@@ -870,10 +992,10 @@ export default function TextBehindSubject({
                 <button
                   type="button"
                   onClick={() => setFontDropdownOpen(!fontDropdownOpen)}
-                  style={{ fontFamily: `"${textConfig.fontFamily}"` }}
+                  style={{ fontFamily: `"${selectedLayer.fontFamily}"` }}
                   className="w-full h-11 flex items-center justify-between text-left px-3.5 py-2.5 border border-gray-200 bg-white hover:bg-gray-50 rounded-lg text-sm font-semibold text-black cursor-pointer shadow-xs transition-all focus:outline-none focus:ring-1 focus:ring-black"
                 >
-                  <span className="truncate">{textConfig.fontFamily}</span>
+                  <span className="truncate">{selectedLayer.fontFamily}</span>
                   <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-200 shrink-0 ${fontDropdownOpen ? "rotate-180" : ""}`} />
                 </button>
 
@@ -907,7 +1029,7 @@ export default function TextBehindSubject({
                         </div>
                       ) : (
                         GOOGLE_FONTS.filter((f) => f.name.toLowerCase().includes(fontSearch.toLowerCase())).map((font) => {
-                          const isSelected = textConfig.fontFamily === font.id;
+                          const isSelected = selectedLayer.fontFamily === font.id;
                           return (
                             <button
                               key={font.id}
@@ -915,7 +1037,7 @@ export default function TextBehindSubject({
                               id={`btn-font-${font.id.replace(/\s+/g, "-")}`}
                               onClick={() => {
                                 loadGoogleFont(font.id);
-                                setTextConfig({ ...textConfig, fontFamily: font.id });
+                                updateSelectedLayer({ fontFamily: font.id });
                                 setFontDropdownOpen(false);
                                 setFontSearch("");
                               }}
@@ -942,14 +1064,14 @@ export default function TextBehindSubject({
               <div>
                 <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                   <span>Size (10px to 400px)</span>
-                  <span className="font-mono text-black">{textConfig.fontSize}px</span>
+                  <span className="font-mono text-black">{selectedLayer.fontSize}px</span>
                 </div>
                 <input
                   type="range"
                   min="10"
                   max="400"
-                  value={textConfig.fontSize}
-                  onChange={(e) => setTextConfig({ ...textConfig, fontSize: parseInt(e.target.value) })}
+                  value={selectedLayer.fontSize}
+                  onChange={(e) => updateSelectedLayer({ fontSize: parseInt(e.target.value) })}
                   className="w-full accent-black cursor-pointer"
                 />
               </div>
@@ -957,33 +1079,33 @@ export default function TextBehindSubject({
               <div>
                 <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                   <span>Weight (100 to 900)</span>
-                  <span className="font-mono text-black">{textConfig.fontWeight}</span>
+                  <span className="font-mono text-black">{selectedLayer.fontWeight}</span>
                 </div>
                 <input
                   type="range"
                   min="100"
                   step="100"
                   max="900"
-                  value={textConfig.fontWeight}
-                  onChange={(e) => setTextConfig({ ...textConfig, fontWeight: parseInt(e.target.value) })}
+                  value={selectedLayer.fontWeight}
+                  onChange={(e) => updateSelectedLayer({ fontWeight: parseInt(e.target.value) })}
                   className="w-full accent-black cursor-pointer"
                 />
               </div>
 
-              {/* Color Picker (moved into Text tab for cleaner 3-tab layout) */}
+              {/* Color Picker */}
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Text Color</label>
                 <div className="flex gap-2.5 items-center">
                   <input
                     type="color"
-                    value={textConfig.color}
-                    onChange={(e) => setTextConfig({ ...textConfig, color: e.target.value })}
+                    value={selectedLayer.color}
+                    onChange={(e) => updateSelectedLayer({ color: e.target.value })}
                     className="w-10 h-10 p-0 border border-gray-200 rounded-lg cursor-pointer"
                   />
                   <input
                     type="text"
-                    value={textConfig.color}
-                    onChange={(e) => setTextConfig({ ...textConfig, color: e.target.value })}
+                    value={selectedLayer.color}
+                    onChange={(e) => updateSelectedLayer({ color: e.target.value })}
                     className="flex-1 text-sm border border-gray-200 p-2 rounded-lg font-mono font-semibold"
                   />
                 </div>
@@ -995,7 +1117,7 @@ export default function TextBehindSubject({
                   {["#ffffff", "#000000", "#ef4444", "#3b82f6", "#10b981", "#eab308", "#a855f7", "#ec4899", "#14b8a6", "#f97316"].map((col) => (
                     <button
                       key={col}
-                      onClick={() => setTextConfig({ ...textConfig, color: col })}
+                      onClick={() => updateSelectedLayer({ color: col })}
                       className="w-7 h-7 rounded-full border border-gray-200 shadow-3xs cursor-pointer hover:scale-110 active:scale-95 transition-transform"
                       style={{ backgroundColor: col }}
                     />
@@ -1006,31 +1128,31 @@ export default function TextBehindSubject({
           )}
 
           {/* TAB 2: STYLE SETTINGS */}
-          {activeTab === "style" && (
+          {activeTab === "style" && selectedLayer && (
             <div className="flex flex-col gap-4 animate-fade-in">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Style Toggles</label>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => setTextConfig({ ...textConfig, isBold: !textConfig.isBold })}
+                    onClick={() => updateSelectedLayer({ isBold: !selectedLayer.isBold })}
                     className={`flex-1 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                      textConfig.isBold ? "bg-black border-black text-white" : "bg-white border-gray-200 text-gray-700 hover:border-gray-450"
+                      selectedLayer.isBold ? "bg-black border-black text-white" : "bg-white border-gray-200 text-gray-700 hover:border-gray-450"
                     }`}
                   >
                     Bold Border
                   </button>
                   <button
-                    onClick={() => setTextConfig({ ...textConfig, isItalic: !textConfig.isItalic })}
+                    onClick={() => updateSelectedLayer({ isItalic: !selectedLayer.isItalic })}
                     className={`flex-1 py-2 text-xs font-medium italic rounded-lg border transition-all cursor-pointer ${
-                      textConfig.isItalic ? "bg-black border-black text-white" : "bg-white border-gray-200 text-gray-700 hover:border-gray-450"
+                      selectedLayer.isItalic ? "bg-black border-black text-white" : "bg-white border-gray-200 text-gray-700 hover:border-gray-450"
                     }`}
                   >
                     Italic
                   </button>
                   <button
-                    onClick={() => setTextConfig({ ...textConfig, isUnderline: !textConfig.isUnderline })}
+                    onClick={() => updateSelectedLayer({ isUnderline: !selectedLayer.isUnderline })}
                     className={`flex-1 py-2 text-xs font-medium underline rounded-lg border transition-all cursor-pointer ${
-                      textConfig.isUnderline ? "bg-black border-black text-white" : "bg-white border-gray-200 text-gray-700 hover:border-gray-450"
+                      selectedLayer.isUnderline ? "bg-black border-black text-white" : "bg-white border-gray-200 text-gray-700 hover:border-gray-450"
                     }`}
                   >
                     Underline
@@ -1042,48 +1164,65 @@ export default function TextBehindSubject({
                 <div>
                   <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                     <span>Letter Spacing</span>
-                    <span className="font-mono font-bold text-black">{textConfig.letterSpacing}px</span>
+                    <span className="font-mono font-bold text-black">{selectedLayer.letterSpacing}px</span>
                   </div>
                   <input
                     type="range"
                     min="-5"
                     max="50"
-                    value={textConfig.letterSpacing}
-                    onChange={(e) => setTextConfig({ ...textConfig, letterSpacing: parseInt(e.target.value) })}
+                    value={selectedLayer.letterSpacing}
+                    onChange={(e) => updateSelectedLayer({ letterSpacing: parseInt(e.target.value) })}
                     className="w-full accent-black cursor-pointer"
                   />
                 </div>
                 <div>
                   <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                    <span>Vertical Stretch</span>
+                    <span className="font-mono font-bold text-black">{selectedLayer.heightScale || 1}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="5"
+                    step="0.1"
+                    value={selectedLayer.heightScale || 1}
+                    onChange={(e) => updateSelectedLayer({ heightScale: parseFloat(e.target.value) })}
+                    className="w-full accent-black cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                     <span>Line Height</span>
-                    <span className="font-mono font-bold text-black">{textConfig.lineHeight}</span>
+                    <span className="font-mono font-bold text-black">{selectedLayer.lineHeight}</span>
                   </div>
                   <input
                     type="range"
                     min="0.5"
                     max="2.5"
                     step="0.1"
-                    value={textConfig.lineHeight}
-                    onChange={(e) => setTextConfig({ ...textConfig, lineHeight: parseFloat(e.target.value) })}
+                    value={selectedLayer.lineHeight}
+                    onChange={(e) => updateSelectedLayer({ lineHeight: parseFloat(e.target.value) })}
                     className="w-full accent-black cursor-pointer"
                   />
                 </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                  <span>Opacity</span>
-                  <span className="font-mono text-black">{Math.round(textConfig.opacity * 100)}%</span>
+                <div>
+                  <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                    <span>Opacity</span>
+                    <span className="font-mono text-black">{Math.round(selectedLayer.opacity * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="1.0"
+                    step="0.05"
+                    value={selectedLayer.opacity}
+                    onChange={(e) => updateSelectedLayer({ opacity: parseFloat(e.target.value) })}
+                    className="w-full accent-black cursor-pointer"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min="0.1"
-                  max="1.0"
-                  step="0.05"
-                  value={textConfig.opacity}
-                  onChange={(e) => setTextConfig({ ...textConfig, opacity: parseFloat(e.target.value) })}
-                  className="w-full accent-black cursor-pointer"
-                />
               </div>
 
               <div className="border-t border-gray-100 pt-3">
@@ -1091,13 +1230,13 @@ export default function TextBehindSubject({
                   <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Glow Neon Effect</label>
                   <input
                     type="checkbox"
-                    checked={textConfig.glowEnabled}
-                    onChange={(e) => setTextConfig({ ...textConfig, glowEnabled: e.target.checked })}
+                    checked={selectedLayer.glowEnabled}
+                    onChange={(e) => updateSelectedLayer({ glowEnabled: e.target.checked })}
                     className="w-4 h-4 accent-black cursor-pointer"
                   />
                 </div>
 
-                {textConfig.glowEnabled ? (
+                {selectedLayer.glowEnabled ? (
                   <div className="grid grid-cols-2 gap-3 bg-gray-50 p-2.5 rounded-lg border border-gray-100">
                     <div>
                       <span className="text-[10px] text-gray-400 font-bold block mb-1">Blur Amount</span>
@@ -1105,8 +1244,8 @@ export default function TextBehindSubject({
                         type="range"
                         min="5"
                         max="80"
-                        value={textConfig.glowBlur}
-                        onChange={(e) => setTextConfig({ ...textConfig, glowBlur: parseInt(e.target.value) })}
+                        value={selectedLayer.glowBlur}
+                        onChange={(e) => updateSelectedLayer({ glowBlur: parseInt(e.target.value) })}
                         className="w-full accent-black"
                       />
                     </div>
@@ -1114,8 +1253,8 @@ export default function TextBehindSubject({
                       <span className="text-[10px] text-gray-400 font-bold block mb-1">Neon Color</span>
                       <input
                         type="color"
-                        value={textConfig.glowColor}
-                        onChange={(e) => setTextConfig({ ...textConfig, glowColor: e.target.value })}
+                        value={selectedLayer.glowColor}
+                        onChange={(e) => updateSelectedLayer({ glowColor: e.target.value })}
                         className="w-full h-8 p-0 border border-gray-200 rounded-md cursor-pointer"
                       />
                     </div>
@@ -1125,28 +1264,27 @@ export default function TextBehindSubject({
                     <div>
                       <div className="flex justify-between text-[10px] text-gray-400 font-bold mb-1">
                         <span>Shadow Blur</span>
-                        <span>{textConfig.shadowBlur}px</span>
+                        <span>{selectedLayer.shadowBlur}px</span>
                       </div>
                       <input
                         type="range"
                         min="0"
                         max="30"
-                        value={textConfig.shadowBlur}
-                        onChange={(e) => setTextConfig({ ...textConfig, shadowBlur: parseInt(e.target.value) })}
+                        value={selectedLayer.shadowBlur}
+                        onChange={(e) => updateSelectedLayer({ shadowBlur: parseInt(e.target.value) })}
                         className="w-full accent-black"
                       />
                     </div>
                     <div>
-                      <span className="text-[10px] text-gray-400 font-bold block mb-1">Shadow Offset X/Y</span>
+                      <span className="text-[10px] text-gray-400 font-bold block mb-1">Shadow Offset</span>
                       <div className="flex gap-1">
                         <input
                           type="range"
                           min="-20"
                           max="20"
-                          value={textConfig.shadowOffsetX}
+                          value={selectedLayer.shadowOffsetX}
                           onChange={(e) =>
-                            setTextConfig({
-                              ...textConfig,
+                            updateSelectedLayer({
                               shadowOffsetX: parseInt(e.target.value),
                               shadowOffsetY: parseInt(e.target.value),
                             })
@@ -1183,9 +1321,9 @@ export default function TextBehindSubject({
           )}
 
           {/* TAB 3: POSITION & SCALING */}
-          {activeTab === "position" && (
+          {activeTab === "position" && selectedLayer && (
             <div className="flex flex-col gap-4 animate-fade-in">
-              <div className="bg-gray-50 p-3 rounded-lg border border-gray-100 flex items-center gap-2">
+              <div className="bg-gray-50 p-3 rounded-lg border border-gray-150 flex items-center gap-2">
                 <Move className="w-4 h-4 text-black shrink-0" />
                 <span className="text-xs text-gray-600 leading-relaxed font-sans font-medium">
                   <strong>PRO-TIP:</strong> Drag the text freely directly on the canvas preview to position it anywhere!
@@ -1195,15 +1333,15 @@ export default function TextBehindSubject({
               <div>
                 <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                   <span>Additional Scale Factor</span>
-                  <span className="font-mono text-black">{textConfig.scale.toFixed(1)}x</span>
+                  <span className="font-mono text-black">{selectedLayer.scale.toFixed(1)}x</span>
                 </div>
                 <input
                   type="range"
                   min="0.4"
                   max="4.0"
                   step="0.1"
-                  value={textConfig.scale}
-                  onChange={(e) => setTextConfig({ ...textConfig, scale: parseFloat(e.target.value) })}
+                  value={selectedLayer.scale}
+                  onChange={(e) => updateSelectedLayer({ scale: parseFloat(e.target.value) })}
                   className="w-full accent-black cursor-pointer"
                 />
               </div>
@@ -1211,14 +1349,14 @@ export default function TextBehindSubject({
               <div>
                 <div className="flex justify-between text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
                   <span>Text Orientation Rotation</span>
-                  <span className="font-mono text-black">{textConfig.rotation}°</span>
+                  <span className="font-mono text-black">{selectedLayer.rotation}°</span>
                 </div>
                 <input
                   type="range"
                   min="-180"
                   max="180"
-                  value={textConfig.rotation}
-                  onChange={(e) => setTextConfig({ ...textConfig, rotation: parseInt(e.target.value) })}
+                  value={selectedLayer.rotation}
+                  onChange={(e) => updateSelectedLayer({ rotation: parseInt(e.target.value) })}
                   className="w-full accent-black cursor-pointer"
                 />
               </div>

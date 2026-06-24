@@ -1,4 +1,5 @@
 export interface TextConfig {
+  id: string;
   text: string;
   fontSize: number; // 10px to 1000px
   fontWeight: number; // 100 to 900
@@ -22,6 +23,7 @@ export interface TextConfig {
   y: number; // percent based (0 - 100)
   rotation: number; // degrees (0 - 360)
   scale: number; // 0.1 to 10
+  heightScale: number; // 1 to 5 for vertical stretch
 }
 
 export interface PresetImage {
