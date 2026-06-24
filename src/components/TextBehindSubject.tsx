@@ -1,13 +1,20 @@
 import React, { useState, useEffect, useRef } from "react";
 import { GOOGLE_FONTS, loadGoogleFont } from "../utils/fonts";
 import { AspectRatio, ASPECT_RATIO_PRESETS, TextConfig } from "../types";
-import { generateCutout, exportComposite, BrushStroke } from "../utils/canvasHelper";
+import {
+  generateCutout,
+  exportCompositeBlob,
+  BrushStroke,
+  ExportFormat,
+  ExportResolution,
+  ImageFilters,
+} from "../utils/canvasHelper";
 import { supabase } from "../utils/supabaseClient";
 import { getDeviceId } from "../utils/auth";
 import {
   Type, CaseUpper, Paintbrush, Sliders, Move, RefreshCw,
   Download, AlertCircle, Trash2, Eye, EyeOff, Upload,
-  ChevronDown, Search, Camera, Linkedin, Instagram, Cloud, Check
+  ChevronDown, Search, Camera, Linkedin, Instagram, Check, Share2
 } from "lucide-react";
 import logo from "../assets/logo.png";
 
@@ -20,7 +27,6 @@ export default function TextBehindSubject({
   setSharedImage?: React.Dispatch<React.SetStateAction<string>>;
   resetCanvasTrigger?: number;
 }) {
-  // Preset or custom uploaded image with fallback to local state if accessed natively
   const [localImage, setLocalImage] = useState<string>("");
   const selectedImage = sharedImage !== undefined ? sharedImage : localImage;
   const setSelectedImage = setSharedImage !== undefined ? setSharedImage : setLocalImage;
@@ -143,17 +149,37 @@ export default function TextBehindSubject({
   const [fontSearch, setFontSearch] = useState<string>("");
 
   // Export configuration
-  const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [exportFormat, setExportFormat] = useState<"png" | "jpeg">("png");
-  const [exportResolution, setExportResolution] = useState<"original" | "hd" | "4k">("hd");
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [isPostingToGallery, setIsPostingToGallery] = useState<boolean>(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("png");
+  const [exportResolution, setExportResolution] = useState<ExportResolution>("original");
+  const [previewWidth, setPreviewWidth] = useState<number>(500);
 
-  // Cloud upload status
-  const [cloudStatus, setCloudStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
-  const [cloudMessage, setCloudMessage] = useState<string>("");
+  // Community gallery upload status (Button B only)
+  const [galleryStatus, setGalleryStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
+  const [galleryMessage, setGalleryMessage] = useState<string>("");
 
   // Interaction Ref for canvas dragging
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ isDragging: boolean; startX: number; startY: number; initialX: number; initialY: number } | null>(null);
+
+  // Track live preview width so export scaleFactor matches on-screen layout
+  useEffect(() => {
+    const node = canvasContainerRef.current;
+    if (!node) return;
+
+    const updatePreviewWidth = () => {
+      const width = node.clientWidth;
+      if (width > 0) {
+        setPreviewWidth(width);
+      }
+    };
+
+    updatePreviewWidth();
+    const observer = new ResizeObserver(updatePreviewWidth);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [selectedImage, ratio]);
 
   // Initialize and load default baseline fonts
   useEffect(() => {
@@ -181,7 +207,7 @@ export default function TextBehindSubject({
           }
         );
         setCutoutUrl(result);
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("Mask generation failed", err);
         setMaskError("Automatic subject detection failed. Ensure the image is accessible.");
       } finally {
@@ -431,101 +457,128 @@ export default function TextBehindSubject({
     setStrokes([]);
   };
 
-  // ─── CLOUD EXPORT: Download + Upload to Supabase ───
-  const handleExport = async () => {
-    setIsExporting(true);
-    setCloudStatus("idle");
-    setCloudMessage("");
+  const buildExportFileName = (): string =>
+    `BehindLensAI_${Date.now()}.${exportFormat === "jpeg" ? "jpg" : "png"}`;
+
+  const renderExportBlob = async (): Promise<Blob> => {
+    if (!selectedImage) {
+      throw new Error("No image selected");
+    }
+
+    const activeRatio = ASPECT_RATIO_PRESETS[ratio];
+    const livePreviewWidth =
+      canvasContainerRef.current?.clientWidth && canvasContainerRef.current.clientWidth > 0
+        ? canvasContainerRef.current.clientWidth
+        : previewWidth;
+
+    textLayers.forEach((layer) => loadGoogleFont(layer.fontFamily));
+    await document.fonts.ready;
+
+    const filters: ImageFilters = {
+      brightness,
+      contrast,
+      saturation,
+      sharpen,
+    };
+
+    return exportCompositeBlob(
+      selectedImage,
+      behindSubjectEnabled ? cutoutUrl : null,
+      textLayers,
+      ratio,
+      activeRatio.ratio,
+      "original",
+      exportFormat,
+      livePreviewWidth,
+      bgBlur,
+      filters
+    );
+  };
+
+  const triggerBrowserDownload = (blob: Blob, fileName: string): void => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Button A — private 4K download only (no cloud)
+  const handlePrivateDownload = async () => {
+    if (!selectedImage || isDownloading || isPostingToGallery) return;
+
+    setIsDownloading(true);
     try {
-      const activeRatio = ASPECT_RATIO_PRESETS[ratio];
-      const containerWidth = canvasContainerRef.current?.clientWidth || 500;
-
-      // 1. Generate the High-Res Image
-      const resultUrl = await exportComposite(
-        selectedImage,
-        behindSubjectEnabled ? cutoutUrl : null,
-        textLayers,
-        ratio,
-        activeRatio.ratio,
-        exportResolution,
-        exportFormat,
-        containerWidth,
-        bgBlur,
-        {
-          brightness,
-          contrast,
-          saturation,
-          sharpen,
-        }
-      );
-
-      // 2. Download it to the user's PC
-      const link = document.createElement("a");
-      link.href = resultUrl;
-      const fileName = `BehindLensAI_${Date.now()}.${exportFormat === "jpeg" ? "jpg" : "png"}`;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      // 3. Upload to Supabase Storage bucket 'posters'
-      setCloudStatus("uploading");
-      setCloudMessage("Uploading to cloud storage...");
-
-      try {
-        // Convert blob URL to actual Blob
-        const response = await fetch(resultUrl);
-        const blob = await response.blob();
-
-        const storagePath = `exports/${fileName}`;
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from("posters")
-          .upload(storagePath, blob, {
-            contentType: exportFormat === "jpeg" ? "image/jpeg" : "image/png",
-            upsert: true,
-          });
-
-        if (uploadError) {
-          console.warn("Supabase storage upload failed:", uploadError.message);
-          setCloudStatus("error");
-          setCloudMessage(`Cloud upload failed: ${uploadError.message}`);
-        } else {
-          // Get the public URL
-          const { data: publicUrlData } = supabase.storage
-            .from("posters")
-            .getPublicUrl(storagePath);
-
-          const publicUrl = publicUrlData?.publicUrl || "";
-
-          // 4. Save the record (URL and Caption) in the 'history' table
-          const { error: dbError } = await supabase.from("history").insert({
-            url: publicUrl,
-            caption: selectedLayer?.text || textLayers[0]?.text || "Untitled Poster",
-            created_at: new Date().toISOString(),
-            device_id: getDeviceId(),
-          });
-
-          if (dbError) {
-            console.warn("Supabase history insert failed:", dbError.message);
-            setCloudStatus("error");
-            setCloudMessage(`Downloaded ✓ | DB save failed: ${dbError.message}`);
-          } else {
-            setCloudStatus("success");
-            setCloudMessage("Downloaded ✓ | Saved to cloud ✓");
-          }
-        }
-      } catch (cloudErr: any) {
-        console.warn("Cloud sync error:", cloudErr);
-        setCloudStatus("error");
-        setCloudMessage(`Downloaded ✓ | Cloud sync failed: ${cloudErr.message || "Unknown error"}`);
-      }
+      const blob = await renderExportBlob();
+      triggerBrowserDownload(blob, buildExportFileName());
     } catch (err) {
       console.error(err);
       alert("Failed to export. Please check the files and try again.");
     } finally {
-      setIsExporting(false);
+      setIsDownloading(false);
     }
   };
+
+  // Button B — optional community gallery share (with confirmation)
+  const handlePostToGallery = async () => {
+    if (!selectedImage || isDownloading || isPostingToGallery) return;
+
+    const confirmed = window.confirm("Do you want to share this masterpiece with the world?");
+    if (!confirmed) return;
+
+    setIsPostingToGallery(true);
+    setGalleryStatus("uploading");
+    setGalleryMessage("Uploading to community gallery...");
+
+    try {
+      const blob = await renderExportBlob();
+      const fileName = buildExportFileName();
+      const storagePath = `exports/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("posters")
+        .upload(storagePath, blob, {
+          contentType: exportFormat === "jpeg" ? "image/jpeg" : "image/png",
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw new Error(uploadError.message);
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from("posters")
+        .getPublicUrl(storagePath);
+
+      const publicUrl = publicUrlData?.publicUrl || "";
+
+      const { error: dbError } = await supabase.from("history").insert({
+        url: publicUrl,
+        caption: selectedLayer?.text || textLayers[0]?.text || "Untitled Poster",
+        created_at: new Date().toISOString(),
+        device_id: getDeviceId(),
+      });
+
+      if (dbError) {
+        throw new Error(dbError.message);
+      }
+
+      setGalleryStatus("success");
+      setGalleryMessage("Posted to community gallery ✓");
+    } catch (err: unknown) {
+      console.warn("Gallery post failed:", err);
+      setGalleryStatus("error");
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setGalleryMessage(`Gallery upload failed: ${msg}`);
+    } finally {
+      setIsPostingToGallery(false);
+    }
+  };
+
+  const isExportBusy = isDownloading || isPostingToGallery;
 
   return (
     <div id="text-behind-subject-editor" className="flex flex-col lg:grid lg:grid-cols-12 gap-6 w-full max-w-7xl mx-auto">
@@ -612,35 +665,7 @@ export default function TextBehindSubject({
               className="relative w-full border border-gray-200 bg-gray-50 rounded-2xl overflow-hidden flex items-center justify-center p-2 mb-2 select-none min-h-[300px]"
               style={{ minHeight: "350px" }}
             >
-              {isMasking && (
-                <div className="absolute inset-x-0 inset-y-0 bg-white/90 backdrop-blur-xs z-50 flex flex-col justify-center items-center p-6 gap-3 select-none">
-                  <div className="relative w-12 h-12 flex items-center justify-center">
-                    <div className="absolute inset-0 border-4 border-gray-100 rounded-full"></div>
-                    <div className="absolute inset-0 border-4 border-black border-t-transparent rounded-full animate-spin"></div>
-                    {maskProgress && (
-                      <span className="text-[10px] font-bold text-gray-800 font-mono">{maskProgress.percent}%</span>
-                    )}
-                  </div>
-                  <p className="text-sm font-bold tracking-wide text-black text-center transition-all">
-                    {maskProgress?.step || "AI Automatic subject masking..."}
-                  </p>
-                  {maskProgress && (
-                    <div className="w-52 bg-gray-100 h-2 rounded-full overflow-hidden border border-gray-200">
-                      <div
-                        className="bg-black h-full transition-all duration-300"
-                        style={{ width: `${maskProgress.percent}%` }}
-                      ></div>
-                    </div>
-                  )}
-                  <p className="text-[10px] text-gray-400 font-mono text-center max-w-[285px] leading-relaxed">
-                    {maskProgress?.step.includes("Model")
-                      ? "Neural weights downloading on first setup (subsequent loads are immediate from cache!)"
-                      : "Delineating subject boundaries using isnet engine"}
-                  </p>
-                </div>
-              )}
-
-              {/* Interactive display node */}
+              {/* Interactive display node — masking overlay scoped here only (sidebar stays editable) */}
               <div
                 id="rendering-stage"
                 ref={canvasContainerRef}
@@ -649,6 +674,33 @@ export default function TextBehindSubject({
                 style={{ maxHeight: "75vh" }}
                 className={`relative max-w-full overflow-hidden shadow-xl border border-gray-150 transition-all ${ASPECT_RATIO_PRESETS[ratio].aspect}`}
               >
+                {isMasking && (
+                  <div className="absolute inset-0 bg-white/90 backdrop-blur-xs z-50 flex flex-col justify-center items-center p-4 gap-3 select-none pointer-events-none">
+                    <div className="relative w-12 h-12 flex items-center justify-center">
+                      <div className="absolute inset-0 border-4 border-gray-100 rounded-full"></div>
+                      <div className="absolute inset-0 border-4 border-black border-t-transparent rounded-full animate-spin"></div>
+                      {maskProgress && (
+                        <span className="text-[10px] font-bold text-gray-800 font-mono">{maskProgress.percent}%</span>
+                      )}
+                    </div>
+                    <p className="text-sm font-bold tracking-wide text-black text-center transition-all">
+                      {maskProgress?.step || "AI Automatic subject masking..."}
+                    </p>
+                    {maskProgress && (
+                      <div className="w-52 bg-gray-100 h-2 rounded-full overflow-hidden border border-gray-200">
+                        <div
+                          className="bg-black h-full transition-all duration-300"
+                          style={{ width: `${maskProgress.percent}%` }}
+                        ></div>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-gray-400 font-mono text-center max-w-[285px] leading-relaxed">
+                      {maskProgress?.step.includes("Model")
+                        ? "Neural weights downloading on first setup (subsequent loads are immediate from cache!)"
+                        : "Delineating subject boundaries using isnet engine"}
+                    </p>
+                  </div>
+                )}
                 {/* Layer 1: Background Image */}
                 <img
                   src={selectedImage}
@@ -859,7 +911,7 @@ export default function TextBehindSubject({
         )}
       </div>
 
-      {/* RIGHT PANEL: SIDEBAR TAB EDITOR */}
+      {/* RIGHT PANEL: SIDEBAR TAB EDITOR — stays interactive while AI masks the image */}
       <div
         onPointerDown={(e) => {
           const target = e.target as HTMLElement;
@@ -870,6 +922,31 @@ export default function TextBehindSubject({
         }}
         className="lg:col-span-5 flex flex-col bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden min-h-[400px]"
       >
+        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-gray-600">
+            Created by <strong className="text-black">Vishwa Rajasekar</strong>
+          </span>
+          <div className="flex items-center gap-3 text-[10px] font-bold">
+            <a
+              href="https://www.instagram.com/astralvishwa/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-gray-600 hover:text-pink-600 transition-colors"
+            >
+              <Instagram className="w-3.5 h-3.5" />
+              @astralvishwa
+            </a>
+            <a
+              href="https://www.linkedin.com/in/vishwarajasekar"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-gray-600 hover:text-blue-600 transition-colors"
+            >
+              <Linkedin className="w-3.5 h-3.5" />
+              vishwarajasekar
+            </a>
+          </div>
+        </div>
 
         {/* LAYER MANAGER SECTION */}
         <div className="p-4 border-b border-gray-150 bg-gray-50/50">
@@ -969,7 +1046,7 @@ export default function TextBehindSubject({
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id as "text" | "image" | "settings")}
                 className={`flex-1 py-3 text-xs font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-all cursor-pointer ${
                   Active
                     ? "bg-white border-black text-black"
@@ -1468,7 +1545,7 @@ export default function TextBehindSubject({
                 <span>Format</span>
                 <select
                   value={exportFormat}
-                  onChange={(e) => setExportFormat(e.target.value as any)}
+                  onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
                   className="bg-gray-50 border border-gray-200 rounded-md py-0.5 px-2 focus:outline-none focus:border-black font-sans font-medium text-black cursor-pointer uppercase text-[11px]"
                 >
                   <option value="png">PNG (Lossless)</option>
@@ -1480,7 +1557,7 @@ export default function TextBehindSubject({
                 <span>Density</span>
                 <select
                   value={exportResolution}
-                  onChange={(e) => setExportResolution(e.target.value as any)}
+                  onChange={(e) => setExportResolution(e.target.value as ExportResolution)}
                   className="bg-gray-50 border border-gray-200 rounded-md py-0.5 px-2 focus:outline-none focus:border-black font-sans font-medium text-black cursor-pointer uppercase text-[11px]"
                 >
                   <option value="original">Original</option>
@@ -1491,41 +1568,59 @@ export default function TextBehindSubject({
             </div>
 
             <button
-              onClick={handleExport}
-              disabled={isExporting || !selectedImage}
-              className="w-full py-3.5 px-5 rounded-xl text-sm font-bold text-white bg-black hover:bg-black/90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:bg-gray-300 disabled:cursor-not-allowed"
+              type="button"
+              onClick={handlePrivateDownload}
+              disabled={isExportBusy || !selectedImage}
+              className="w-full py-4 px-5 rounded-xl text-sm font-bold text-white bg-black hover:bg-black/90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
-              {isExporting ? (
+              {isDownloading ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>{cloudStatus === "uploading" ? "Uploading to cloud..." : "Compositing layer assets..."}</span>
+                  <span>Rendering 4K export...</span>
                 </>
               ) : (
                 <>
                   <Download className="w-4 h-4" />
-                  <Cloud className="w-4 h-4" />
-                  <span>Download & Save to Cloud</span>
+                  <span>Download High-Res (Private)</span>
                 </>
               )}
             </button>
 
-            {/* Cloud status message */}
-            {cloudMessage && (
+            <button
+              type="button"
+              onClick={handlePostToGallery}
+              disabled={isExportBusy || !selectedImage}
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold text-gray-700 bg-white border border-gray-300 hover:border-black hover:text-black active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isPostingToGallery ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
+                  <span>Posting to gallery...</span>
+                </>
+              ) : (
+                <>
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Post to Community Gallery</span>
+                </>
+              )}
+            </button>
+
+            {galleryMessage && (
               <div className={`text-xs font-medium flex items-center gap-1.5 p-2 rounded-lg border ${
-                cloudStatus === "success"
+                galleryStatus === "success"
                   ? "bg-green-50 border-green-200 text-green-700"
-                  : cloudStatus === "error"
+                  : galleryStatus === "error"
                   ? "bg-yellow-50 border-yellow-200 text-yellow-700"
                   : "bg-blue-50 border-blue-200 text-blue-700"
               }`}>
-                {cloudStatus === "success" ? (
+                {galleryStatus === "success" ? (
                   <Check className="w-3.5 h-3.5" />
-                ) : cloudStatus === "error" ? (
+                ) : galleryStatus === "error" ? (
                   <AlertCircle className="w-3.5 h-3.5" />
                 ) : (
-                  <Cloud className="w-3.5 h-3.5 animate-pulse" />
+                  <div className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                 )}
-                {cloudMessage}
+                {galleryMessage}
               </div>
             )}
           </div>

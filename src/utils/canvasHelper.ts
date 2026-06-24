@@ -1,112 +1,321 @@
 import { removeBackground } from "@imgly/background-removal";
 import { TextConfig } from "../types";
+import { loadGoogleFont } from "./fonts";
 
 export interface BrushStroke {
-  x: number; // percentage based (0-100) of image width
-  y: number; // percentage based (0-100) of image height
-  radius: number; // brush size
+  x: number;
+  y: number;
+  radius: number;
   type: "erase" | "restore";
 }
 
+export interface ImageFilters {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  sharpen: number;
+}
+
+export type ExportResolution = "original" | "hd" | "4k";
+export type ExportFormat = "png" | "jpeg";
+
 /**
- * Creates high performance transparent cutout from a source image
- * using @imgly/background-removal with isnet model and the
- * advanced "BMW Solid Mask" algorithm (alpha > 20 → 255).
+ * Zero-fail async loader — resolves only after decode() and valid natural dimensions.
  */
+export function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    let settled = false;
+
+    const finish = async () => {
+      if (settled) return;
+      if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+        settled = true;
+        reject(new Error(`Image loaded with zero dimensions: ${src.slice(0, 120)}`));
+        return;
+      }
+      try {
+        if (typeof img.decode === "function") {
+          await img.decode();
+        }
+        settled = true;
+        resolve(img);
+      } catch (err) {
+        settled = true;
+        reject(err);
+      }
+    };
+
+    if (!src.startsWith("data:") && !src.startsWith("blob:")) {
+      img.crossOrigin = "anonymous";
+    }
+
+    img.onload = () => void finish();
+    img.onerror = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`Failed to load image: ${src.slice(0, 120)}`));
+    };
+
+    img.src = src;
+    if (img.complete) {
+      void finish();
+    }
+  });
+}
+
+/** BMW Solid Mask — alpha > 15 becomes fully opaque; halos below threshold are cleared. */
+function applyBmwSolidMask(imageData: ImageData): void {
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    if (a <= 0 || a >= 255) continue;
+
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const isLightGrey =
+      r > 180 &&
+      g > 180 &&
+      b > 180 &&
+      Math.abs(r - g) < 25 &&
+      Math.abs(g - b) < 25 &&
+      Math.abs(r - b) < 25;
+
+    if (isLightGrey && a < 180) {
+      data[i + 3] = Math.max(0, Math.round(a * 0.1));
+    } else if (a > 15) {
+      data[i + 3] = 255;
+    } else {
+      data[i + 3] = 0;
+    }
+  }
+}
+
+function buildBackgroundFilter(filters?: ImageFilters, blurPx?: number): string {
+  const parts: string[] = [];
+  if (filters) {
+    parts.push(`brightness(${filters.brightness})`);
+    parts.push(`contrast(${Math.round(filters.contrast * 100)}%)`);
+    parts.push(`saturate(${Math.round(filters.saturation * 100)}%)`);
+  }
+  if (blurPx && blurPx > 0) {
+    parts.push(`blur(${blurPx}px)`);
+  }
+  return parts.join(" ");
+}
+
+async function ensureTextFontsLoaded(textConfigs: TextConfig[]): Promise<void> {
+  const families = [...new Set(textConfigs.map((t) => t.fontFamily))];
+  families.forEach((family) => loadGoogleFont(family));
+
+  await Promise.all(
+    families.map((family) =>
+      Promise.all([
+        document.fonts.load(`400 16px "${family}"`),
+        document.fonts.load(`700 16px "${family}"`),
+        document.fonts.load(`900 16px "${family}"`),
+      ]).catch(() => undefined)
+    )
+  );
+  await document.fonts.ready;
+}
+
+function computeCropRect(
+  naturalW: number,
+  naturalH: number,
+  targetRatio: number | null
+): { x: number; y: number; w: number; h: number } {
+  if (!targetRatio) {
+    return { x: 0, y: 0, w: naturalW, h: naturalH };
+  }
+
+  const currentRatio = naturalW / naturalH;
+  if (currentRatio > targetRatio) {
+    const w = naturalH * targetRatio;
+    return { x: (naturalW - w) / 2, y: 0, w, h: naturalH };
+  }
+
+  const h = naturalW / targetRatio;
+  return { x: 0, y: (naturalH - h) / 2, w: naturalW, h };
+}
+
+function resolveExportDimensions(
+  naturalWidth: number,
+  naturalHeight: number,
+  crop: { w: number; h: number },
+  resolution: ExportResolution
+): { canvasW: number; canvasH: number; outputScale: number } {
+  const baseW = Math.round(crop.w);
+  const baseH = Math.round(crop.h);
+
+  if (resolution === "original" || resolution === "4k") {
+    return { canvasW: baseW, canvasH: baseH, outputScale: 1 };
+  }
+
+  const maxDim = 1920;
+  const longest = Math.max(baseW, baseH);
+  if (longest <= maxDim) {
+    return { canvasW: baseW, canvasH: baseH, outputScale: 1 };
+  }
+
+  const scale = maxDim / longest;
+  return {
+    canvasW: Math.round(baseW * scale),
+    canvasH: Math.round(baseH * scale),
+    outputScale: scale,
+  };
+}
+
+/**
+ * Triple-pass text: pass 1 shadow/glow, passes 2–3 solid fill for gap-free glyphs.
+ * Mustang Stretch: ctx.scale(1, heightScale) applied before drawing.
+ */
+function drawTextLayer(
+  ctx: CanvasRenderingContext2D,
+  t: TextConfig,
+  canvasW: number,
+  canvasH: number,
+  scaleFactor: number
+): void {
+  const tx = (t.x / 100) * canvasW;
+  const ty = (t.y / 100) * canvasH;
+  const finalFontSize = t.fontSize * scaleFactor * t.scale;
+  const resolvedWeight = t.isBold && t.fontWeight < 700 ? 900 : t.fontWeight;
+  const italicPrefix = t.isItalic ? "italic " : "";
+  const heightScale = t.heightScale || 1;
+
+  ctx.save();
+  ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
+
+  const letterSpacingCtx = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
+  if (t.letterSpacing !== undefined) {
+    letterSpacingCtx.letterSpacing = `${t.letterSpacing * scaleFactor}px`;
+  }
+
+  const textMetrics = ctx.measureText(t.text);
+  const textWidth = textMetrics.width;
+  const halfW = textWidth / 2;
+  const halfH = (finalFontSize * heightScale) / 2;
+
+  let adjustedTx = tx;
+  let adjustedTy = ty;
+  if (adjustedTx - halfW < 0) adjustedTx = halfW;
+  else if (adjustedTx + halfW > canvasW) adjustedTx = canvasW - halfW;
+  if (adjustedTy - halfH < 0) adjustedTy = halfH;
+  else if (adjustedTy + halfH > canvasH) adjustedTy = canvasH - halfH;
+
+  ctx.translate(adjustedTx, adjustedTy);
+  ctx.rotate((t.rotation * Math.PI) / 180);
+  ctx.scale(1, heightScale);
+
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  ctx.globalAlpha = t.opacity;
+  ctx.fillStyle = t.color;
+
+  for (let pass = 0; pass < 3; pass++) {
+    ctx.save();
+
+    if (pass === 0) {
+      if (t.glowEnabled) {
+        ctx.shadowColor = t.glowColor;
+        ctx.shadowBlur = t.glowBlur * scaleFactor;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+      } else if (t.shadowBlur > 0 || t.shadowOffsetX !== 0 || t.shadowOffsetY !== 0) {
+        ctx.shadowColor = t.shadowColor;
+        ctx.shadowBlur = t.shadowBlur * scaleFactor;
+        ctx.shadowOffsetX = t.shadowOffsetX * scaleFactor;
+        ctx.shadowOffsetY = t.shadowOffsetY * scaleFactor;
+      }
+    } else {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.globalAlpha = t.opacity;
+      ctx.fillStyle = t.color;
+    }
+
+    ctx.fillText(t.text, 0, 0);
+
+    if (pass === 0 && t.isBold) {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = t.color;
+      ctx.lineWidth = Math.max(1, 2 * scaleFactor);
+      ctx.lineJoin = "round";
+      ctx.strokeText(t.text, 0, 0);
+    }
+
+    if (pass === 0 && t.isUnderline) {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      const underlineY = finalFontSize / 1.7;
+      ctx.beginPath();
+      ctx.moveTo(-textWidth / 2, underlineY);
+      ctx.lineTo(textWidth / 2, underlineY);
+      ctx.strokeStyle = t.color;
+      ctx.lineWidth = Math.max(2, finalFontSize / 15);
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
 export async function generateCutout(
   imageSrc: string,
-  threshold: number,
-  feather: number,
+  _threshold: number,
+  _feather: number,
   strokes: BrushStroke[] = [],
-  customBgColor?: string,
+  _customBgColor?: string,
   onProgress?: (step: string, percent: number) => void
 ): Promise<string> {
+  const cutoutBlob = await removeBackground(imageSrc, {
+    model: "isnet",
+    progress: (key: string, current: number, total: number) => {
+      if (!onProgress) return;
+      const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+      let stage = "Analyzing image...";
+      if (key.includes("fetch")) stage = "Downloading AI Model (isnet)...";
+      if (key.includes("compute")) stage = "Processing subject mask...";
+      onProgress(stage, percent);
+    },
+  });
+
+  const blobUrl = URL.createObjectURL(cutoutBlob);
+
   try {
-    // 1. Run @imgly/background-removal with isnet model (high-quality) for professional-grade masking
-    const cutoutBlob = await removeBackground(imageSrc, {
-      model: "isnet",
-      progress: (key: string, current: number, total: number) => {
-        if (onProgress) {
-          const percent = total > 0 ? Math.round((current / total) * 100) : 0;
-          let stage = "Analyzing image...";
-          if (key.includes("fetch")) stage = "Downloading AI Model (isnet)...";
-          if (key.includes("compute")) stage = "Processing subject mask...";
-          onProgress(stage, percent);
-        }
-      },
-    } as any);
-    const blobUrl = URL.createObjectURL(cutoutBlob);
-
-    // 2. Load blob as Image so we can postprocess with Canvas & Soft-Glow outline removal
-    const imgObj = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = (e) => reject(e);
-      img.src = blobUrl;
-    });
-
-    // Load original image to get the true full-resolution dimensions (e.g., 4K)
-    const originalImg = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => resolve(img);
-      img.onerror = (e) => reject(e);
-      img.src = imageSrc;
-    });
-
-    // Create post-processing canvas at the original image's full resolution
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      URL.revokeObjectURL(blobUrl);
-      throw new Error("Failed to create canvas context");
-    }
+    const [cutoutImg, originalImg] = await Promise.all([
+      loadImage(blobUrl),
+      loadImage(imageSrc),
+    ]);
 
     const w = originalImg.naturalWidth;
     const h = originalImg.naturalHeight;
+
+    const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Failed to create canvas context");
+    }
 
-    // Enforce high quality smoothing during full-res scaling
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(cutoutImg, 0, 0, w, h);
 
-    // Draw the cutout scaled back to the original full-resolution (naturalWidth/Height)
-    ctx.drawImage(imgObj, 0, 0, w, h);
-    URL.revokeObjectURL(blobUrl);
-
-    // 3. BMW SOLID MASK & SOFT-GLOW REMOVAL:
-    // For semi-transparent edge outline pixels, we clean up gray/white halos.
-    // Otherwise, we solidify alpha > 20 to 255 to hide text behind subject perfectly.
     const imgData = ctx.getImageData(0, 0, w, h);
-    const data = imgData.data;
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const a = data[i + 3];
-
-      if (a > 0 && a < 255) {
-        // Soft-Glow Removal: clean up white/grey outlines/halos around hair and shoulders
-        const isLightGrey = r > 180 && g > 180 && b > 180 && Math.abs(r - g) < 25 && Math.abs(g - b) < 25 && Math.abs(r - b) < 25;
-        if (isLightGrey && a < 180) {
-          data[i + 3] = Math.max(0, Math.round(a * 0.1)); // Soften / fade out outline halos
-        } else if (a > 20) {
-          data[i + 3] = 255;
-        } else {
-          data[i + 3] = 0;
-        }
-      }
-    }
+    applyBmwSolidMask(imgData);
     ctx.putImageData(imgData, 0, 0);
 
-    // 4. Apply custom manual Brush Mask strokes on top
     if (strokes.length > 0) {
-      ctx.save();
-
-      // Reuse the already loaded original image
-      const originalImgRestore = originalImg;
-
       strokes.forEach((stroke) => {
         const sx = (stroke.x / 100) * w;
         const sy = (stroke.y / 100) * h;
@@ -116,131 +325,73 @@ export async function generateCutout(
         ctx.arc(sx, sy, srad, 0, Math.PI * 2);
 
         if (stroke.type === "erase") {
-          // Cut holes in cutout
           ctx.globalCompositeOperation = "destination-out";
           ctx.fillStyle = "rgba(0,0,0,1)";
           ctx.fill();
-        } else if (originalImg) {
-          // Restore from original image
+        } else {
           ctx.globalCompositeOperation = "source-over";
           ctx.save();
           ctx.beginPath();
           ctx.arc(sx, sy, srad, 0, Math.PI * 2);
           ctx.clip();
-          ctx.drawImage(originalImgRestore, 0, 0, w, h);
+          ctx.drawImage(originalImg, 0, 0, w, h);
 
-          // Re-solidify and clean outline halos
           const areaData = ctx.getImageData(0, 0, w, h);
-          const aData = areaData.data;
-          for (let k = 0; k < aData.length; k += 4) {
-            const ar = aData[k];
-            const ag = aData[k + 1];
-            const ab = aData[k + 2];
-            const aa = aData[k + 3];
-
-            if (aa > 0 && aa < 255) {
-              // Soft-Glow Removal: clean up white/grey outlines/halos around hair and shoulders
-              const isLightGrey = ar > 180 && ag > 180 && ab > 180 && Math.abs(ar - ag) < 25 && Math.abs(ag - ab) < 25 && Math.abs(ar - ab) < 25;
-              if (isLightGrey && aa < 180) {
-                aData[k + 3] = Math.max(0, Math.round(aa * 0.1));
-              } else if (aa > 20) {
-                aData[k + 3] = 255;
-              } else {
-                aData[k + 3] = 0;
-              }
-            }
-          }
+          applyBmwSolidMask(areaData);
           ctx.putImageData(areaData, 0, 0);
-
           ctx.restore();
         }
       });
-      ctx.restore();
+      ctx.globalCompositeOperation = "source-over";
     }
 
-    // Done. Extract base64 transparent PNG cutout
     return canvas.toDataURL("image/png");
   } catch (err) {
     console.error("AI Background Removal / Cutout compilation failed", err);
     throw err;
+  } finally {
+    URL.revokeObjectURL(blobUrl);
   }
 }
 
 /**
- * Composites background + text + cutout foreground at the full native resolution
- * of the source photograph. Uses naturalWidth × naturalHeight for true 4K export.
- *
- * Key engineering features:
- *  1. Resolution baseline is always naturalWidth × naturalHeight
- *  2. Triple-Pass text rendering for solid, sharp font texture in exports
- *  3. BMW Solid Mask ensures subject cutout has zero transparency bleed
- *  4. JPEG encoder quality at 0.98 for near-lossless professional output
+ * Zero-fail export engine — native-resolution composite with Auto-Enhance on background.
+ * Returns raw Blob for private download or cloud upload pipelines.
  */
-export async function exportComposite(
+export async function exportCompositeBlob(
   backgroundSrc: string,
   cutoutSrc: string | null,
   textConfig: TextConfig | TextConfig[],
-  aspectRatioLabel: string,
+  _aspectRatioLabel: string,
   targetRatio: number | null,
-  resolution: "original" | "hd" | "4k",
-  format: "png" | "jpeg",
-  displayWidthRef: number = 500,
+  resolution: ExportResolution,
+  format: ExportFormat,
+  previewWidth: number = 500,
   backgroundBlur: number = 0,
-  filters?: {
-    brightness: number;
-    contrast: number;
-    saturation: number;
-    sharpen: number;
-  }
-): Promise<string> {
-  // 1. Preload both images using Promise.all to ensure background and cutout are 100% loaded
-  const loadImg = (src: string): Promise<HTMLImageElement> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => resolve(img);
-      img.onerror = (e) => reject(new Error(`Failed to load image: ${src}`));
-      img.src = src;
-    });
-  };
+  filters?: ImageFilters
+): Promise<Blob> {
+  const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
+  const safePreviewWidth = Math.max(1, previewWidth);
 
-  const promises: [Promise<HTMLImageElement>, Promise<HTMLImageElement | null>] = [
-    loadImg(backgroundSrc),
-    cutoutSrc ? loadImg(cutoutSrc).catch(() => null) : Promise.resolve(null)
-  ];
+  const [bgImg, cutoutImg] = await Promise.all([
+    loadImage(backgroundSrc),
+    cutoutSrc ? loadImage(cutoutSrc) : Promise.resolve(null),
+  ]);
 
-  const [bgImg, cutoutImg] = await Promise.all(promises);
-  if (!bgImg) {
-    throw new Error("Failed to load background source image");
-  }
+  await ensureTextFontsLoaded(textConfigs);
 
-  // ─── 0. Resolution baseline — set canvas dimensions exactly to bgImg.naturalWidth and bgImg.naturalHeight ───
-  let canvasW = bgImg.naturalWidth;
-  let canvasH = bgImg.naturalHeight;
-  let sourceX = 0;
-  let sourceY = 0;
-  let sourceW = bgImg.naturalWidth;
-  let sourceH = bgImg.naturalHeight;
+  const naturalWidth = bgImg.naturalWidth;
+  const naturalHeight = bgImg.naturalHeight;
+  const crop = computeCropRect(naturalWidth, naturalHeight, targetRatio);
+  const { canvasW, canvasH, outputScale } = resolveExportDimensions(
+    naturalWidth,
+    naturalHeight,
+    crop,
+    resolution
+  );
 
-  // ─── 1. Aspect-ratio crop math at full native resolution ───
-  if (targetRatio) {
-    const currentRatio = sourceW / sourceH;
-    if (currentRatio > targetRatio) {
-      const croppedW = sourceH * targetRatio;
-      sourceX = (sourceW - croppedW) / 2;
-      sourceW = croppedW;
-      canvasW = Math.round(croppedW);
-      canvasH = Math.round(sourceH);
-    } else {
-      const croppedH = sourceW / targetRatio;
-      sourceY = (sourceH - croppedH) / 2;
-      sourceH = croppedH;
-      canvasW = Math.round(sourceW);
-      canvasH = Math.round(croppedH);
-    }
-  }
+  const scaleFactor = (naturalWidth / safePreviewWidth) * outputScale;
 
-  // ─── 2. Create the export canvas ───
   const canvas = document.createElement("canvas");
   canvas.width = canvasW;
   canvas.height = canvasH;
@@ -252,208 +403,114 @@ export async function exportComposite(
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
 
-  // ─── 3. Layer 1 — Background (with optional DSLR blur & adjustments) ───
-  const scaleFactor = canvasW / displayWidthRef;
-
-  // Build combined filter string using percentages for contrast and saturation to guarantee proper canvas rendering
-  let filterString = "";
-  if (filters) {
-    const b = filters.brightness;
-    const c = Math.round(filters.contrast * 100);
-    const s = Math.round(filters.saturation * 100);
-    filterString = `brightness(${b}) contrast(${c}%) saturate(${s}%)`;
-    if (filters.sharpen > 0) {
-      filterString += ` url(#sharpen-effect)`;
-    }
+  if (format === "jpeg") {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvasW, canvasH);
   }
 
-  if (backgroundBlur && backgroundBlur > 0) {
-    const scaledBlur = backgroundBlur * scaleFactor;
-    ctx.save();
-    ctx.filter = filterString ? `${filterString} blur(${scaledBlur}px)` : `blur(${scaledBlur}px)`;
-    const offset = scaledBlur * 2;
+  const scaledBlur = backgroundBlur > 0 ? backgroundBlur * scaleFactor : 0;
+  const bgFilter = buildBackgroundFilter(filters, scaledBlur);
+
+  ctx.save();
+  ctx.filter = bgFilter || "none";
+
+  if (backgroundBlur > 0) {
+    const bleed = scaledBlur * 2;
     ctx.drawImage(
       bgImg,
-      sourceX, sourceY, sourceW, sourceH,
-      -offset, -offset,
-      canvasW + offset * 2,
-      canvasH + offset * 2
+      crop.x,
+      crop.y,
+      crop.w,
+      crop.h,
+      -bleed,
+      -bleed,
+      canvasW + bleed * 2,
+      canvasH + bleed * 2
     );
-    ctx.restore();
   } else {
-    ctx.save();
-    if (filterString) {
-      ctx.filter = filterString;
-    }
-    ctx.drawImage(bgImg, sourceX, sourceY, sourceW, sourceH, 0, 0, canvasW, canvasH);
-    ctx.restore();
+    ctx.drawImage(
+      bgImg,
+      crop.x,
+      crop.y,
+      crop.w,
+      crop.h,
+      0,
+      0,
+      canvasW,
+      canvasH
+    );
   }
-
+  ctx.restore();
   ctx.filter = "none";
 
-  // ─── 4. Layer 2 — TRIPLE-PASS Text Rendering ───
-  const textConfigs = Array.isArray(textConfig) ? textConfig : [textConfig];
+  textConfigs.forEach((t) => drawTextLayer(ctx, t, canvasW, canvasH, scaleFactor));
 
-  textConfigs.forEach((t) => {
-    const tx = (t.x / 100) * canvasW;
-    const ty = (t.y / 100) * canvasH;
-    const finalFontSize = t.fontSize * scaleFactor * t.scale;
-    const resolvedWeight = (t.isBold && t.fontWeight < 700) ? 900 : t.fontWeight;
-    const italicPrefix = t.isItalic ? "italic " : "";
-
-    // Triple-Pass: draw text 3 times for solid, sharp font texture
-    for (let pass = 0; pass < 3; pass++) {
-      ctx.save();
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-
-      // Set font and letter spacing first to accurately measure text metrics
-      ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
-      if (t.letterSpacing !== undefined) {
-        (ctx as any).letterSpacing = `${t.letterSpacing * scaleFactor}px`;
-      }
-
-      const textMetrics = ctx.measureText(t.text);
-      const textWidth = textMetrics.width;
-
-      // Bounding box dimensions for alignment check (accounting for letter width/height)
-      const halfW = textWidth / 2;
-      const halfH = (finalFontSize * (t.heightScale || 1)) / 2;
-
-      // Constrain adjusted translation coordinates to prevent clipping on the canvas edges
-      let adjustedTx = tx;
-      let adjustedTy = ty;
-
-      if (adjustedTx - halfW < 0) {
-        adjustedTx = halfW;
-      } else if (adjustedTx + halfW > canvasW) {
-        adjustedTx = canvasW - halfW;
-      }
-
-      if (adjustedTy - halfH < 0) {
-        adjustedTy = halfH;
-      } else if (adjustedTy + halfH > canvasH) {
-        adjustedTy = canvasH - halfH;
-      }
-
-      // Apply translation, rotation, and scaling transformations safely inside save/restore
-      ctx.translate(adjustedTx, adjustedTy);
-      ctx.rotate((t.rotation * Math.PI) / 180);
-
-      // Apply vertical stretch
-      if (t.heightScale && t.heightScale !== 1) {
-        ctx.scale(1, t.heightScale);
-      }
-
-      ctx.textBaseline = "middle";
-      ctx.textAlign = "center";
-      ctx.globalAlpha = t.opacity;
-
-      // Shadow / Glow (High-DPI scaled)
-      if (pass === 0) {
-        if (t.glowEnabled) {
-          ctx.shadowColor = t.glowColor;
-          ctx.shadowBlur = t.glowBlur * scaleFactor;
-          ctx.shadowOffsetX = 0;
-          ctx.shadowOffsetY = 0;
-        } else if (t.shadowBlur > 0 || t.shadowOffsetX !== 0 || t.shadowOffsetY !== 0) {
-          ctx.shadowColor = t.shadowColor;
-          ctx.shadowBlur = t.shadowBlur * scaleFactor;
-          ctx.shadowOffsetX = t.shadowOffsetX * scaleFactor;
-          ctx.shadowOffsetY = t.shadowOffsetY * scaleFactor;
-        }
-      } else {
-        ctx.shadowColor = "transparent";
-        ctx.shadowBlur = 0;
-      }
-
-      // Fill text
-      ctx.fillStyle = t.color;
-      ctx.fillText(t.text, 0, 0);
-
-      // Bold stroke overlay with High-DPI scaled strokeWidth (first pass only)
-      if (pass === 0 && t.isBold) {
-        ctx.shadowColor = "transparent";
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = t.color;
-        const strokeWidth = Math.max(1, 2 * scaleFactor);
-        ctx.lineWidth = strokeWidth;
-        ctx.lineJoin = "round";
-        ctx.strokeText(t.text, 0, 0);
-      }
-
-      // Underline with High-DPI scaled metrics (first pass only)
-      if (pass === 0 && t.isUnderline) {
-        ctx.shadowColor = "transparent";
-        ctx.shadowBlur = 0;
-        const underlineY = finalFontSize / 1.7;
-        ctx.beginPath();
-        ctx.moveTo(-textWidth / 2, underlineY);
-        ctx.lineTo(textWidth / 2, underlineY);
-        ctx.strokeStyle = t.color;
-        ctx.lineWidth = Math.max(2, finalFontSize / 15);
-        ctx.lineCap = "round";
-        ctx.stroke();
-      }
-
-      ctx.restore();
-    }
-  });
-
-  // ─── 5. Layer 3 — Subject cutout overlay ───
   if (cutoutImg) {
+    const cutoutCrop = computeCropRect(
+      cutoutImg.naturalWidth,
+      cutoutImg.naturalHeight,
+      targetRatio
+    );
+
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.globalAlpha = 1.0;
-
-    if (filterString) {
-      ctx.filter = filterString.trim();
-    }
-
-    let cutoutSourceX = 0;
-    let cutoutSourceY = 0;
-    let cutoutSourceW = cutoutImg.naturalWidth;
-    let cutoutSourceH = cutoutImg.naturalHeight;
-
-    if (targetRatio) {
-      const currentRatio = cutoutSourceW / cutoutSourceH;
-      if (currentRatio > targetRatio) {
-        const croppedW = cutoutSourceH * targetRatio;
-        cutoutSourceX = (cutoutSourceW - croppedW) / 2;
-        cutoutSourceW = croppedW;
-      } else {
-        const croppedH = cutoutSourceW / targetRatio;
-        cutoutSourceY = (cutoutSourceH - croppedH) / 2;
-        cutoutSourceH = croppedH;
-      }
-    }
-
+    ctx.globalAlpha = 1;
     ctx.drawImage(
       cutoutImg,
-      cutoutSourceX, cutoutSourceY, cutoutSourceW, cutoutSourceH,
-      0, 0, canvasW, canvasH
+      cutoutCrop.x,
+      cutoutCrop.y,
+      cutoutCrop.w,
+      cutoutCrop.h,
+      0,
+      0,
+      canvasW,
+      canvasH
     );
     ctx.restore();
   }
 
-  // ─── 6. Encode & export ───
   const mime = format === "jpeg" ? "image/jpeg" : "image/png";
   const quality = format === "jpeg" ? 0.98 : undefined;
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
-        if (blob) {
-          const url = URL.createObjectURL(blob);
-          resolve(url);
-        } else {
+        if (!blob) {
           reject(new Error("Failed to compile final image canvas data"));
+          return;
         }
+        resolve(blob);
       },
       mime,
       quality
     );
   });
+}
+
+/** Creates an object URL from the rendered composite (caller should revoke when done). */
+export async function exportComposite(
+  backgroundSrc: string,
+  cutoutSrc: string | null,
+  textConfig: TextConfig | TextConfig[],
+  aspectRatioLabel: string,
+  targetRatio: number | null,
+  resolution: ExportResolution,
+  format: ExportFormat,
+  previewWidth: number = 500,
+  backgroundBlur: number = 0,
+  filters?: ImageFilters
+): Promise<string> {
+  const blob = await exportCompositeBlob(
+    backgroundSrc,
+    cutoutSrc,
+    textConfig,
+    aspectRatioLabel,
+    targetRatio,
+    resolution,
+    format,
+    previewWidth,
+    backgroundBlur,
+    filters
+  );
+  return URL.createObjectURL(blob);
 }
