@@ -45,7 +45,16 @@ export async function generateCutout(
       img.src = blobUrl;
     });
 
-    // Create post-processing canvas
+    // Load original image to get the true full-resolution dimensions (e.g., 4K)
+    const originalImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = (e) => reject(e);
+      img.src = imageSrc;
+    });
+
+    // Create post-processing canvas at the original image's full resolution
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     if (!ctx) {
@@ -53,12 +62,12 @@ export async function generateCutout(
       throw new Error("Failed to create canvas context");
     }
 
-    const w = imgObj.width;
-    const h = imgObj.height;
+    const w = originalImg.naturalWidth;
+    const h = originalImg.naturalHeight;
     canvas.width = w;
     canvas.height = h;
 
-    // Draw cutout output
+    // Draw the cutout scaled back to the original full-resolution (naturalWidth/Height)
     ctx.drawImage(imgObj, 0, 0, w, h);
     URL.revokeObjectURL(blobUrl);
 
@@ -91,14 +100,8 @@ export async function generateCutout(
     if (strokes.length > 0) {
       ctx.save();
 
-      // Load raw original background to restore from if stroke is "restore"
-      const originalImg = await new Promise<HTMLImageElement | null>((resolve) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => resolve(img);
-        img.onerror = () => resolve(null);
-        img.src = imageSrc;
-      });
+      // Reuse the already loaded original image
+      const originalImgRestore = originalImg;
 
       strokes.forEach((stroke) => {
         const sx = (stroke.x / 100) * w;
@@ -120,7 +123,7 @@ export async function generateCutout(
           ctx.beginPath();
           ctx.arc(sx, sy, srad, 0, Math.PI * 2);
           ctx.clip();
-          ctx.drawImage(originalImg, 0, 0, w, h);
+          ctx.drawImage(originalImgRestore, 0, 0, w, h);
 
           // Re-solidify and clean outline halos
           const areaData = ctx.getImageData(0, 0, w, h);
@@ -196,49 +199,30 @@ export async function exportComposite(
       cutoutImg.crossOrigin = "anonymous";
 
       const proceed = () => {
-        // ─── 0. Resolution baseline — always start from naturalWidth × naturalHeight ───
-        let targetWidth = bgImg.naturalWidth;
-        let targetHeight = bgImg.naturalHeight;
-
-        if (resolution === "hd") {
-          const hdBound = 1920;
-          const longestEdge = Math.max(targetWidth, targetHeight);
-          if (longestEdge < hdBound) {
-            const scale = hdBound / longestEdge;
-            targetWidth = Math.round(targetWidth * scale);
-            targetHeight = Math.round(targetHeight * scale);
-          }
-        } else if (resolution === "4k") {
-          const fourKBound = 3840;
-          const longestEdge = Math.max(targetWidth, targetHeight);
-          if (longestEdge < fourKBound) {
-            const scale = fourKBound / longestEdge;
-            targetWidth = Math.round(targetWidth * scale);
-            targetHeight = Math.round(targetHeight * scale);
-          }
-        }
-
-        // ─── 1. Aspect-ratio crop math ───
-        let canvasW = targetWidth;
-        let canvasH = targetHeight;
+        // ─── 0. Resolution baseline — set canvas dimensions exactly to bgImg.naturalWidth and bgImg.naturalHeight ───
+        let canvasW = bgImg.naturalWidth;
+        let canvasH = bgImg.naturalHeight;
         let sourceX = 0;
         let sourceY = 0;
         let sourceW = bgImg.naturalWidth;
         let sourceH = bgImg.naturalHeight;
 
+        // ─── 1. Aspect-ratio crop math at full native resolution ───
         if (targetRatio) {
           const currentRatio = sourceW / sourceH;
           if (currentRatio > targetRatio) {
             const croppedW = sourceH * targetRatio;
             sourceX = (sourceW - croppedW) / 2;
             sourceW = croppedW;
+            canvasW = Math.round(croppedW);
+            canvasH = Math.round(sourceH);
           } else {
             const croppedH = sourceW / targetRatio;
             sourceY = (sourceH - croppedH) / 2;
             sourceH = croppedH;
+            canvasW = Math.round(sourceW);
+            canvasH = Math.round(croppedH);
           }
-          canvasW = targetWidth;
-          canvasH = Math.round(targetWidth / targetRatio);
         }
 
         // ─── 2. Create the export canvas ───
@@ -306,7 +290,37 @@ export async function exportComposite(
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = "high";
 
-            ctx.translate(tx, ty);
+            // Set font and letter spacing first to accurately measure text metrics
+            ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
+            if (t.letterSpacing !== undefined) {
+              (ctx as any).letterSpacing = `${t.letterSpacing * scaleFactor}px`;
+            }
+
+            const textMetrics = ctx.measureText(t.text);
+            const textWidth = textMetrics.width;
+
+            // Bounding box dimensions for alignment check (accounting for letter width/height)
+            const halfW = textWidth / 2;
+            const halfH = (finalFontSize * (t.heightScale || 1)) / 2;
+
+            // Constrain adjusted translation coordinates to prevent clipping on the canvas edges
+            let adjustedTx = tx;
+            let adjustedTy = ty;
+
+            if (adjustedTx - halfW < 0) {
+              adjustedTx = halfW;
+            } else if (adjustedTx + halfW > canvasW) {
+              adjustedTx = canvasW - halfW;
+            }
+
+            if (adjustedTy - halfH < 0) {
+              adjustedTy = halfH;
+            } else if (adjustedTy + halfH > canvasH) {
+              adjustedTy = canvasH - halfH;
+            }
+
+            // Apply translation, rotation, and scaling transformations safely inside save/restore
+            ctx.translate(adjustedTx, adjustedTy);
             ctx.rotate((t.rotation * Math.PI) / 180);
 
             // Apply vertical stretch
@@ -314,15 +328,11 @@ export async function exportComposite(
               ctx.scale(1, t.heightScale);
             }
 
-            ctx.font = `${italicPrefix}${resolvedWeight} ${finalFontSize}px "${t.fontFamily}", sans-serif`;
-            if (t.letterSpacing !== undefined) {
-              (ctx as any).letterSpacing = `${t.letterSpacing * scaleFactor}px`;
-            }
             ctx.textBaseline = "middle";
             ctx.textAlign = "center";
             ctx.globalAlpha = t.opacity;
 
-            // Shadow / Glow
+            // Shadow / Glow (High-DPI scaled)
             if (pass === 0) {
               if (t.glowEnabled) {
                 ctx.shadowColor = t.glowColor;
@@ -344,22 +354,21 @@ export async function exportComposite(
             ctx.fillStyle = t.color;
             ctx.fillText(t.text, 0, 0);
 
-            // Bold stroke overlay (first pass only)
+            // Bold stroke overlay with High-DPI scaled strokeWidth (first pass only)
             if (pass === 0 && t.isBold) {
               ctx.shadowColor = "transparent";
               ctx.shadowBlur = 0;
               ctx.strokeStyle = t.color;
-              ctx.lineWidth = Math.max(1, 2 * scaleFactor);
+              const strokeWidth = Math.max(1, 2 * scaleFactor);
+              ctx.lineWidth = strokeWidth;
               ctx.lineJoin = "round";
               ctx.strokeText(t.text, 0, 0);
             }
 
-            // Underline (first pass only)
+            // Underline with High-DPI scaled metrics (first pass only)
             if (pass === 0 && t.isUnderline) {
               ctx.shadowColor = "transparent";
               ctx.shadowBlur = 0;
-              const textMetrics = ctx.measureText(t.text);
-              const textWidth = textMetrics.width;
               const underlineY = finalFontSize / 1.7;
               ctx.beginPath();
               ctx.moveTo(-textWidth / 2, underlineY);
