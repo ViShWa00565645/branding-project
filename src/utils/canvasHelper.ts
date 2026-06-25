@@ -378,9 +378,12 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
 
   const naturalWidth = bgImg.naturalWidth;
   const naturalHeight = bgImg.naturalHeight;
-  const crop = computeCropRect(naturalWidth, naturalHeight, targetRatio);
-  const { canvasW, canvasH } = resolveCanvasDimensions(crop, resolution);
+  
+  // Canvas Size Lock: Set the export canvas width and height strictly to bgImg.naturalWidth and bgImg.naturalHeight.
+  const canvasW = naturalWidth;
+  const canvasH = naturalHeight;
 
+  // High-DPI Math: Calculate the scaleFactor by dividing the naturalWidth by the previewWidth.
   const scaleFactor = canvasW / Math.max(1, previewWidth);
 
   const canvas = document.createElement("canvas");
@@ -391,7 +394,9 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
     throw new Error("Could not create high resolution rendering canvas context");
   }
 
-  configureHighQualityContext(ctx);
+  // Anti-Aliasing: Enable ctx.imageSmoothingEnabled = true and set ctx.imageSmoothingQuality = 'high'.
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 
   if (format === "jpeg") {
     ctx.fillStyle = "#ffffff";
@@ -408,10 +413,10 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
     const bleed = scaledBlur * 2;
     ctx.drawImage(
       bgImg,
-      crop.x,
-      crop.y,
-      crop.w,
-      crop.h,
+      0,
+      0,
+      naturalWidth,
+      naturalHeight,
       -bleed,
       -bleed,
       canvasW + bleed * 2,
@@ -420,10 +425,10 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
   } else {
     ctx.drawImage(
       bgImg,
-      crop.x,
-      crop.y,
-      crop.w,
-      crop.h,
+      0,
+      0,
+      naturalWidth,
+      naturalHeight,
       0,
       0,
       canvasW,
@@ -437,16 +442,17 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
 
   if (cutoutImg) {
     ctx.save();
-    configureHighQualityContext(ctx);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
     ctx.filter = "none";
     ctx.drawImage(
       cutoutImg,
-      crop.x,
-      crop.y,
-      crop.w,
-      crop.h,
+      0,
+      0,
+      cutoutImg.naturalWidth,
+      cutoutImg.naturalHeight,
       0,
       0,
       canvasW,
@@ -488,7 +494,8 @@ export async function exportCompositeBlob(
   });
 
   const mime = format === "jpeg" ? "image/jpeg" : "image/png";
-  const quality = format === "jpeg" ? 0.98 : undefined;
+  // JPEG/PNG Quality: Ensure the final toBlob uses a quality setting of 1.0 (100% quality).
+  const quality = 1.0;
 
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
