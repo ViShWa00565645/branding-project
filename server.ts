@@ -49,7 +49,7 @@ async function bootstrap() {
     app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
   app.listen(Number(PORT), "0.0.0.0", () => {
-    console.log(`🚀 SUCCESS! POSTER AI IS LIVE ON PORT ${PORT}`);
+    console.log(`🚀 SUCCESS! BEHINDLENS AI IS LIVE ON PORT ${PORT}`);
   });
 }
 bootstrap();

@@ -907,30 +907,13 @@ export default function TextBehindSubject({
         }}
         className="lg:col-span-5 flex flex-col bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden min-h-[400px]"
       >
-        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold text-gray-600">
-            Created by <strong className="text-black">Vishwa Rajasekar</strong>
+        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-black tracking-widest text-gray-400 uppercase">
+            Design Controls
           </span>
-          <div className="flex items-center gap-3 text-[10px] font-bold">
-            <a
-              href="https://www.instagram.com/astralvishwa/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-gray-600 hover:text-pink-600 transition-colors"
-            >
-              <Instagram className="w-3.5 h-3.5" />
-              @astralvishwa
-            </a>
-            <a
-              href="https://www.linkedin.com/in/vishwarajasekar"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-gray-600 hover:text-blue-600 transition-colors"
-            >
-              <Linkedin className="w-3.5 h-3.5" />
-              vishwarajasekar
-            </a>
-          </div>
+          <span className="text-[9px] text-gray-400 font-semibold">
+            BehindLens AI
+          </span>
         </div>
 
         {/* LAYER MANAGER SECTION */}
