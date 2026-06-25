@@ -386,32 +386,37 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
   // High-DPI Math: Calculate the scaleFactor by dividing the naturalWidth by the previewWidth.
   const scaleFactor = canvasW / Math.max(1, previewWidth);
 
-  const canvas = document.createElement("canvas");
-  canvas.width = canvasW;
-  canvas.height = canvasH;
-  const ctx = canvas.getContext("2d", { alpha: true });
-  if (!ctx) {
-    throw new Error("Could not create high resolution rendering canvas context");
+  // SuperScale Factor: 2x the natural resolution to render the text internally before downscaling it for ultra-smooth edges.
+  const superScale = 2;
+  const superW = canvasW * superScale;
+  const superH = canvasH * superScale;
+
+  const superCanvas = document.createElement("canvas");
+  superCanvas.width = superW;
+  superCanvas.height = superH;
+  const superCtx = superCanvas.getContext("2d", { alpha: true });
+  if (!superCtx) {
+    throw new Error("Could not create supersampled rendering canvas context");
   }
 
-  // Anti-Aliasing: Enable ctx.imageSmoothingEnabled = true and set ctx.imageSmoothingQuality = 'high'.
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  // Anti-Aliasing: Enable image smoothing and set quality to high.
+  superCtx.imageSmoothingEnabled = true;
+  superCtx.imageSmoothingQuality = "high";
 
   if (format === "jpeg") {
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvasW, canvasH);
+    superCtx.fillStyle = "#ffffff";
+    superCtx.fillRect(0, 0, superW, superH);
   }
 
   const scaledBlur = backgroundBlur > 0 ? backgroundBlur * scaleFactor : 0;
-  const bgFilter = buildBackgroundFilter(filters, scaledBlur);
+  const bgFilter = buildBackgroundFilter(filters, scaledBlur * superScale);
 
-  ctx.save();
-  ctx.filter = bgFilter || "none";
+  superCtx.save();
+  superCtx.filter = bgFilter || "none";
 
   if (backgroundBlur > 0) {
-    const bleed = scaledBlur * 2;
-    ctx.drawImage(
+    const bleed = scaledBlur * 2 * superScale;
+    superCtx.drawImage(
       bgImg,
       0,
       0,
@@ -419,11 +424,11 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
       naturalHeight,
       -bleed,
       -bleed,
-      canvasW + bleed * 2,
-      canvasH + bleed * 2
+      superW + bleed * 2,
+      superH + bleed * 2
     );
   } else {
-    ctx.drawImage(
+    superCtx.drawImage(
       bgImg,
       0,
       0,
@@ -431,23 +436,24 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
       naturalHeight,
       0,
       0,
-      canvasW,
-      canvasH
+      superW,
+      superH
     );
   }
-  ctx.restore();
-  ctx.filter = "none";
+  superCtx.restore();
+  superCtx.filter = "none";
 
-  textConfigs.forEach((t) => drawTextLayer(ctx, t, canvasW, canvasH, scaleFactor));
+  // Triple-Pass Solid Texture: Render every text layer 3 times at 2x supersampled scale.
+  textConfigs.forEach((t) => drawTextLayer(superCtx, t, superW, superH, scaleFactor * superScale));
 
   if (cutoutImg) {
-    ctx.save();
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.globalCompositeOperation = "source-over";
-    ctx.globalAlpha = 1;
-    ctx.filter = "none";
-    ctx.drawImage(
+    superCtx.save();
+    superCtx.imageSmoothingEnabled = true;
+    superCtx.imageSmoothingQuality = "high";
+    superCtx.globalCompositeOperation = "source-over";
+    superCtx.globalAlpha = 1;
+    superCtx.filter = "none";
+    superCtx.drawImage(
       cutoutImg,
       0,
       0,
@@ -455,11 +461,29 @@ async function renderCompositeCanvas(input: CompositeRenderInput): Promise<HTMLC
       cutoutImg.naturalHeight,
       0,
       0,
-      canvasW,
-      canvasH
+      superW,
+      superH
     );
-    ctx.restore();
+    superCtx.restore();
   }
+
+  // Downscale the supersampled canvas to the final canvas size
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  const ctx = canvas.getContext("2d", { alpha: true });
+  if (!ctx) {
+    throw new Error("Could not create final rendering canvas context");
+  }
+
+  if (format === "jpeg") {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(superCanvas, 0, 0, superW, superH, 0, 0, canvasW, canvasH);
 
   return canvas;
 }
