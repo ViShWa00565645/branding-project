@@ -1,4 +1,4 @@
-# 🚀 PosterAI Pro
+# 🚀 Behindlens AI
 ### Professional Creative Studio
 
 > Created by **Vishwa Rajasekar**
