@@ -1,20 +1,51 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# 🚀 PosterAI Pro
+### Professional Creative Studio
 
-# Run and deploy your AI Studio app
+> Created by **Vishwa Rajasekar**
 
-This contains everything you need to run your app locally.
+PosterAI is a high-fidelity web application designed for creators who want professional-grade **Text Behind Subject** effects and DSLR-style **Portrait Mode** simulations instantly. The application uses advanced client-side machine learning to process images securely and privately.
 
-View your app in AI Studio: https://ai.studio/apps/0d7fa3ff-e24d-47c2-a05b-e0bcc1f21358
+---
 
-## Run Locally
+## ✨ Key Features
 
-**Prerequisites:**  Node.js
+### 🎨 AI-Powered Typography
+Automatically detects subjects and places text behind them with high precision.
 
+### 🚗 Solid Mask Engine (BMW Fix)
+Advanced pixel-loop logic ensures text remains perfectly hidden behind car windows, windshields, hair, and other complex objects.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### 📷 DSLR Lens Blur
+Simulates professional camera depth-of-field (Bokeh) with a real-time aperture control slider.
+
+### ☁️ Cloud Gallery
+Integrated with **Supabase** for permanent cloud history and public showcase functionality.
+
+### 🖼️ 4K High-Resolution Export
+Uses `naturalWidth` rendering to preserve original image quality during downloads.
+
+### 🔒 Privacy First
+Background removal is processed locally in the browser. Images are not sent to external servers for processing.
+
+---
+
+## 🛠️ Technology Stack
+
+| Category | Technology |
+|----------|------------|
+| Frontend | React 19 + Vite |
+| Backend | Express (Node.js) |
+| AI Engine | @imgly/background-removal |
+| Database & Storage | Supabase |
+| Vision Analysis | Google Gemini API |
+| Icons | Lucide React |
+
+---
+
+## 🚀 Quick Start
+
+### 1. Clone the Repository
+
+```bash
+git clone <repository-url>
+git clone <repository-url>
